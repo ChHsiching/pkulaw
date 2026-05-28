@@ -1,7 +1,21 @@
 __pycache__/
 *.pyc
-output/
+*.pyo
 *.egg-info/
+dist/
+build/
 .venv/
-node_modules/
+.env
+
+# Crawler output
+output/
+
+# Claude Code
+.claude/
 .remember/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
