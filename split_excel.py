@@ -1,7 +1,8 @@
 """Split a large Excel/JSON file into smaller files with identical headers."""
+
+import argparse
 import json
 import re
-import argparse
 from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
@@ -15,11 +16,13 @@ def split_json(input_path: Path, output_dir: Path, chunk_size: int) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     for i in range(0, len(cases), chunk_size):
-        chunk = cases[i:i + chunk_size]
+        chunk = cases[i : i + chunk_size]
         idx = i // chunk_size + 1
         total = (len(cases) + chunk_size - 1) // chunk_size
         out_path = output_dir / f"pkulaw_cases_{idx:03d}_of_{total}.json"
-        out_path.write_text(json.dumps(chunk, ensure_ascii=False, indent=2), encoding="utf-8")
+        out_path.write_text(
+            json.dumps(chunk, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
         print(f"  {out_path.name}: {len(chunk)} cases")
 
     print(f"Split {len(cases)} cases into {total} files")
@@ -37,7 +40,7 @@ def split_excel(input_path: Path, output_dir: Path, chunk_size: int) -> None:
     columns = sorted(all_keys - skip)
 
     for i in range(0, len(cases), chunk_size):
-        chunk = cases[i:i + chunk_size]
+        chunk = cases[i : i + chunk_size]
         idx = i // chunk_size + 1
         total = (len(cases) + chunk_size - 1) // chunk_size
         out_path = output_dir / f"pkulaw_cases_{idx:03d}_of_{total}.xlsx"
@@ -60,12 +63,18 @@ def split_excel(input_path: Path, output_dir: Path, chunk_size: int) -> None:
         wb.save(str(out_path))
         print(f"  {out_path.name}: {len(chunk)} cases, {len(columns)} columns")
 
-    print(f"Split {len(cases)} cases into {total} Excel files ({len(columns)} columns each)")
+    print(
+        f"Split {len(cases)} cases into {total} Excel files ({len(columns)} columns each)"
+    )
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Split large case data into smaller files")
-    parser.add_argument("--input", default="output/pkulaw_cases.json", help="Input JSON path")
+    parser = argparse.ArgumentParser(
+        description="Split large case data into smaller files"
+    )
+    parser.add_argument(
+        "--input", default="output/pkulaw_cases.json", help="Input JSON path"
+    )
     parser.add_argument("--output-dir", default="output/split", help="Output directory")
     parser.add_argument("--chunk-size", type=int, default=10000, help="Cases per file")
     parser.add_argument("--format", choices=["json", "excel", "both"], default="both")

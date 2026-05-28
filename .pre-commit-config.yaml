@@ -1,0 +1,37 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ['--maxkb=500']
+      - id: no-commit-to-branch
+        args: ['--branch', 'main']
+
+  - repo: https://github.com/psf/black
+    rev: 25.1.0
+    hooks:
+      - id: black
+        language_version: python3
+
+  - repo: https://github.com/PyCQA/isort
+    rev: 6.0.1
+    hooks:
+      - id: isort
+
+  - repo: local
+    hooks:
+      - id: no-co-author
+        name: no co-author in commit message
+        entry: scripts/hooks/no-co-author.sh
+        language: script
+        stages: [commit-msg]
+      - id: no-sensitive-data
+        name: no sensitive data (tokens/keys)
+        entry: scripts/hooks/no-sensitive-data.sh
+        language: script
+        types: [text]

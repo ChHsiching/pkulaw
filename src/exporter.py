@@ -13,12 +13,32 @@ def _sanitize(value):
         return _ILLEGAL_RE.sub("", value)
     return value
 
+
 BASE_COLUMNS = [
-    "gid", "url", "title", "案例层级", "法宝引证码", "时效性",
-    "案由", "案号", "文书类型", "公开类型", "审理法院", "审结日期",
-    "案件类型", "审理程序", "案例发文", "案例编号", "发布日期",
-    "来源", "刑罚", "指控罪名", "判定罪名",
-    "审理法官", "代理律师/律所", "权责关键词",
+    "gid",
+    "url",
+    "title",
+    "案例层级",
+    "法宝引证码",
+    "时效性",
+    "案由",
+    "案号",
+    "文书类型",
+    "公开类型",
+    "审理法院",
+    "审结日期",
+    "案件类型",
+    "审理程序",
+    "案例发文",
+    "案例编号",
+    "发布日期",
+    "来源",
+    "刑罚",
+    "指控罪名",
+    "判定罪名",
+    "审理法官",
+    "代理律师/律所",
+    "权责关键词",
 ]
 
 WIDE_COLUMNS = {"gid", "full_text", "url", "刑罚"}
@@ -30,7 +50,11 @@ def _build_column_order(cases: list[dict]) -> list[str]:
     section_labels = set()
     for case in cases:
         for key in case:
-            if key not in METADATA_KEYS and key != "full_text" and key not in {"gid", "url", "title"}:
+            if (
+                key not in METADATA_KEYS
+                and key != "full_text"
+                and key not in {"gid", "url", "title"}
+            ):
                 if case.get(key, ""):
                     section_labels.add(key)
 

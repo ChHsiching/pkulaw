@@ -1,12 +1,13 @@
 """Crawler for PKULaw cases — incremental search + fetch."""
-import time
+
 import json
+import time
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
+from src.exporter import export_excel, export_json
 from src.parser import parse_case
-from src.exporter import export_json, export_excel
 
 OUTPUT_DIR = Path("output")
 PROGRESS_FILE = OUTPUT_DIR / "progress.json"
@@ -29,27 +30,46 @@ BASE_SEARCH_BODY = {
     "orderbyExpression": "LastInstanceDate Desc",
     "fieldNodes": [
         {
-            "type": "text", "order": 1, "combineAs": 2,
-            "fieldName": "FullText", "showText": "全文", "subCombineAs": 2,
-            "fieldItems": [{
-                "values": "抗诉", "valuesCombineAs": 2,
-                "extra": {"values": "", "combineAs": 2},
-                "matchType": 1, "matchSpan": 1, "matchSpanGap": 0,
-                "fieldScope": {"fieldName": "", "showText": ""},
-                "order": 0, "filterNodes": []
-            }],
-            "matchTypeEnabled": False, "matchSpanEnabled": True, "matchSpans": None,
+            "type": "text",
+            "order": 1,
+            "combineAs": 2,
+            "fieldName": "FullText",
+            "showText": "全文",
+            "subCombineAs": 2,
+            "fieldItems": [
+                {
+                    "values": "抗诉",
+                    "valuesCombineAs": 2,
+                    "extra": {"values": "", "combineAs": 2},
+                    "matchType": 1,
+                    "matchSpan": 1,
+                    "matchSpanGap": 0,
+                    "fieldScope": {"fieldName": "", "showText": ""},
+                    "order": 0,
+                    "filterNodes": [],
+                }
+            ],
+            "matchTypeEnabled": False,
+            "matchSpanEnabled": True,
+            "matchSpans": None,
         },
         {
-            "type": "select", "order": 6, "combineAs": 2,
-            "fieldName": "TrialStep", "showText": "审理程序",
-            "fieldItems": [{
-                "items": [
-                    {"text": "二审", "path": "002", "name": "二审", "value": "002"},
-                    {"text": "再审", "path": "003", "name": "再审", "value": "003"},
-                ],
-                "combineAs": 2, "order": 0, "filterNodes": [],
-            }],
+            "type": "select",
+            "order": 6,
+            "combineAs": 2,
+            "fieldName": "TrialStep",
+            "showText": "审理程序",
+            "fieldItems": [
+                {
+                    "items": [
+                        {"text": "二审", "path": "002", "name": "二审", "value": "002"},
+                        {"text": "再审", "path": "003", "name": "再审", "value": "003"},
+                    ],
+                    "combineAs": 2,
+                    "order": 0,
+                    "filterNodes": [],
+                }
+            ],
         },
     ],
     "clusterFilters": {"CategoryNew": "001"},
@@ -81,13 +101,23 @@ def _authenticate(page) -> str:
     print("=== Authentication ===")
     for attempt in range(3):
         try:
-            page.goto("https://www.pkulaw.com/advanced/case", wait_until="commit", timeout=120000)
+            page.goto(
+                "https://www.pkulaw.com/advanced/case",
+                wait_until="commit",
+                timeout=120000,
+            )
             for _ in range(60):
                 page.wait_for_timeout(1000)
-                token = page.evaluate("() => localStorage.getItem('access_token') || ''")
-                if token and page.evaluate(
-                    "() => document.getElementById('app')?.innerHTML?.length || 0"
-                ) > 10000:
+                token = page.evaluate(
+                    "() => localStorage.getItem('access_token') || ''"
+                )
+                if (
+                    token
+                    and page.evaluate(
+                        "() => document.getElementById('app')?.innerHTML?.length || 0"
+                    )
+                    > 10000
+                ):
                     break
             if token:
                 print(f"Authenticated ({token[:40]}...)")
@@ -101,11 +131,19 @@ def _authenticate(page) -> str:
 
 def _reauth(page) -> str:
     print("  Re-authenticating...")
-    page.goto("https://www.pkulaw.com/advanced/case", wait_until="commit", timeout=120000)
+    page.goto(
+        "https://www.pkulaw.com/advanced/case", wait_until="commit", timeout=120000
+    )
     for _ in range(60):
         page.wait_for_timeout(1000)
         token = page.evaluate("() => localStorage.getItem('access_token') || ''")
-        if token and page.evaluate("() => document.getElementById('app')?.innerHTML?.length || 0") > 10000:
+        if (
+            token
+            and page.evaluate(
+                "() => document.getElementById('app')?.innerHTML?.length || 0"
+            )
+            > 10000
+        ):
             print(f"  Re-authenticated ({token[:30]}...)")
             return token
     raise RuntimeError("Re-authentication failed")
@@ -168,11 +206,15 @@ def run_search() -> None:
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
-            executable_path="/usr/bin/chromium", headless=True,
-            args=["--no-sandbox", "--disable-setuid-sandbox"])
+            executable_path="/usr/bin/chromium",
+            headless=True,
+            args=["--no-sandbox", "--disable-setuid-sandbox"],
+        )
         context = browser.new_context(
             user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
-            viewport={"width": 1920, "height": 1080}, ignore_https_errors=True)
+            viewport={"width": 1920, "height": 1080},
+            ignore_https_errors=True,
+        )
         page = context.new_page()
 
         token = _authenticate(page)
@@ -183,7 +225,9 @@ def run_search() -> None:
                 for sort_order in SORT_ORDERS:
                     page_idx = 0
                     while page_idx < MAX_PAGES:
-                        data, token = _search_one(page, token, year, sort_order, page_idx)
+                        data, token = _search_one(
+                            page, token, year, sort_order, page_idx
+                        )
                         items = data.get("data", [])
 
                         if not items:
@@ -195,16 +239,20 @@ def run_search() -> None:
                             if gid in seen_gids:
                                 continue
                             seen_gids.add(gid)
-                            results.append({
-                                "gid": gid,
-                                "title": item.get("title", ""),
-                                "search_year": year,
-                            })
+                            results.append(
+                                {
+                                    "gid": gid,
+                                    "title": item.get("title", ""),
+                                    "search_year": year,
+                                }
+                            )
                             new_count += 1
 
                         if page_idx == 0:
                             total = data.get("total", 0)
-                            print(f"  {year} [{sort_order}]: total={total}, +{new_count}")
+                            print(
+                                f"  {year} [{sort_order}]: total={total}, +{new_count}"
+                            )
 
                         if new_count == 0:
                             break
@@ -217,7 +265,7 @@ def run_search() -> None:
 
         except Exception as e:
             print(f"Search interrupted: {e}")
-            _save_search(results, year if 'year' in dir() else start_year)
+            _save_search(results, year if "year" in dir() else start_year)
 
         browser.close()
 
@@ -232,7 +280,9 @@ def _save_all(results: list[dict], fetched_gids: set[str]) -> None:
         print(f"  Excel export failed: {e}")
     _save_progress(fetched_gids)
     good = sum(1 for c in results if len(c.get("full_text", "")) > 500)
-    print(f"  -> Saved ({len(results)} cases, {len(fetched_gids)} fetched, {good} loaded)")
+    print(
+        f"  -> Saved ({len(results)} cases, {len(fetched_gids)} fetched, {good} loaded)"
+    )
 
 
 def run_fetch() -> None:
@@ -253,7 +303,9 @@ def run_fetch() -> None:
 
         remaining = [c for c in cases_meta if c["gid"] not in fetched_gids]
         print(f"\n{'='*50}")
-        print(f"Remaining: {len(remaining)}/{len(cases_meta)} ({len(fetched_gids)} fetched)")
+        print(
+            f"Remaining: {len(remaining)}/{len(cases_meta)} ({len(fetched_gids)} fetched)"
+        )
 
         if not remaining:
             print("All fetched!")
@@ -263,11 +315,15 @@ def run_fetch() -> None:
         try:
             with sync_playwright() as p:
                 browser = p.chromium.launch(
-                    executable_path="/usr/bin/chromium", headless=True,
-                    args=["--no-sandbox", "--disable-setuid-sandbox"])
+                    executable_path="/usr/bin/chromium",
+                    headless=True,
+                    args=["--no-sandbox", "--disable-setuid-sandbox"],
+                )
                 context = browser.new_context(
                     user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
-                    viewport={"width": 1920, "height": 1080}, ignore_https_errors=True)
+                    viewport={"width": 1920, "height": 1080},
+                    ignore_https_errors=True,
+                )
                 page = context.new_page()
 
                 token = _authenticate(page)
@@ -299,7 +355,10 @@ def run_fetch() -> None:
 
                         html = page.content()
                         parsed = parse_case(html, gid)
-                        if not parsed["title"] or parsed["title"] in ("已进入法宝V6", ""):
+                        if not parsed["title"] or parsed["title"] in (
+                            "已进入法宝V6",
+                            "",
+                        ):
                             parsed["title"] = title
 
                         results.append(parsed)
@@ -317,10 +376,15 @@ def run_fetch() -> None:
                         if "Execution context" in err_str or "Target closed" in err_str:
                             try:
                                 page = context.new_page()
-                                page.goto("https://www.pkulaw.com/advanced/case",
-                                          wait_until="commit", timeout=60000)
+                                page.goto(
+                                    "https://www.pkulaw.com/advanced/case",
+                                    wait_until="commit",
+                                    timeout=60000,
+                                )
                                 page.wait_for_timeout(3000)
-                                page.evaluate("() => localStorage.getItem('access_token') || ''")
+                                page.evaluate(
+                                    "() => localStorage.getItem('access_token') || ''"
+                                )
                             except Exception:
                                 print("  Page recovery failed, restarting browser...")
                                 break
@@ -344,7 +408,9 @@ def run_fetch() -> None:
         time.sleep(15)
 
     good = sum(1 for c in results if len(c.get("full_text", "")) > 500)
-    print(f"\nTotal: {len(results)} cases, {good} loaded ({100*good//max(len(results),1)}%)")
+    print(
+        f"\nTotal: {len(results)} cases, {good} loaded ({100*good//max(len(results),1)}%)"
+    )
 
 
 def run() -> list[dict]:

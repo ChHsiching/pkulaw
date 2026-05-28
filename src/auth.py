@@ -29,9 +29,7 @@ def get_auth_session():
         token = ""
         for _ in range(30):
             page.wait_for_timeout(1000)
-            token = page.evaluate(
-                "() => localStorage.getItem('access_token') || ''"
-            )
+            token = page.evaluate("() => localStorage.getItem('access_token') || ''")
             if token:
                 break
 

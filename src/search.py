@@ -1,5 +1,5 @@
-import time
 import json
+import time
 
 import requests
 
@@ -50,8 +50,18 @@ def build_search_body(page_index: int, page_size: int = 20) -> dict:
                 "fieldItems": [
                     {
                         "items": [
-                            {"text": "二审", "path": "002", "name": "二审", "value": "002"},
-                            {"text": "再审", "path": "003", "name": "再审", "value": "003"},
+                            {
+                                "text": "二审",
+                                "path": "002",
+                                "name": "二审",
+                                "value": "002",
+                            },
+                            {
+                                "text": "再审",
+                                "path": "003",
+                                "name": "再审",
+                                "value": "003",
+                            },
                         ],
                         "combineAs": 2,
                         "order": 0,
@@ -69,7 +79,9 @@ def _make_session(token: str, cookies: dict) -> requests.Session:
     session = requests.Session()
     session.headers.update(
         {
-            "Authorization": token if token.startswith("Bearer ") else f"Bearer {token}",
+            "Authorization": (
+                token if token.startswith("Bearer ") else f"Bearer {token}"
+            ),
             "Accept": "application/json, text/plain, */*",
             "Content-Type": "application/json",
             "User-Agent": (
@@ -119,13 +131,15 @@ def search_cases(
                 break
 
             except (requests.RequestException, json.JSONDecodeError) as e:
-                wait = RETRY_BACKOFF * (2 ** attempt)
+                wait = RETRY_BACKOFF * (2**attempt)
                 print(f"Search error (attempt {attempt + 1}/{MAX_RETRIES}): {e}")
                 if attempt < MAX_RETRIES - 1:
                     print(f"  Retrying in {wait}s...")
                     time.sleep(wait)
                 else:
-                    raise RuntimeError(f"Search failed after {MAX_RETRIES} retries") from e
+                    raise RuntimeError(
+                        f"Search failed after {MAX_RETRIES} retries"
+                    ) from e
         else:
             raise RuntimeError("Search failed: all retries exhausted on auth refresh")
 
@@ -141,9 +155,7 @@ def search_cases(
                 {
                     "gid": item["gid"],
                     "title": item.get("title", ""),
-                    "summaries": [
-                        s.get("text", "") for s in item.get("summaries", [])
-                    ],
+                    "summaries": [s.get("text", "") for s in item.get("summaries", [])],
                 }
             )
 

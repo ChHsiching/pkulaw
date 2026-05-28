@@ -1,9 +1,12 @@
 """Re-fetch failed cases and update the output files."""
+
 import json
 from pathlib import Path
+
 from playwright.sync_api import sync_playwright
+
+from src.exporter import export_excel, export_json
 from src.parser import parse_case
-from src.exporter import export_json, export_excel
 
 RESULTS_FILE = Path("output/pkulaw_cases.json")
 EXCEL_FILE = Path("output/pkulaw_cases.xlsx")
@@ -19,7 +22,7 @@ def refetch():
         bad_gids = set(json.load(f))
 
     # Build title lookup
-    title_map = {c['gid']: c['title'] for c in cases}
+    title_map = {c["gid"]: c["title"] for c in cases}
 
     print(f"Re-fetching {len(bad_gids)} failed cases...")
 
@@ -37,7 +40,9 @@ def refetch():
         page = context.new_page()
 
         # Auth
-        page.goto("https://www.pkulaw.com/advanced/case", wait_until="commit", timeout=120000)
+        page.goto(
+            "https://www.pkulaw.com/advanced/case", wait_until="commit", timeout=120000
+        )
         for _ in range(60):
             page.wait_for_timeout(1000)
             token = page.evaluate("() => localStorage.getItem('access_token') || ''")
@@ -81,7 +86,9 @@ def refetch():
                     print(f"[{i+1}/{len(bad_gids)}] OK: {title[:50]} ({ft_len} chars)")
                 else:
                     remaining.append(gid)
-                    print(f"[{i+1}/{len(bad_gids)}] STILL BAD: {title[:50]} ({ft_len} chars)")
+                    print(
+                        f"[{i+1}/{len(bad_gids)}] STILL BAD: {title[:50]} ({ft_len} chars)"
+                    )
 
             except Exception as e:
                 remaining.append(gid)
@@ -89,6 +96,7 @@ def refetch():
                 continue
 
             import time
+
             time.sleep(REQUEST_DELAY)
 
         browser.close()
@@ -105,7 +113,7 @@ def refetch():
     )
 
     if remaining:
-        with open(REFETCH_FILE, 'w') as f:
+        with open(REFETCH_FILE, "w") as f:
             json.dump(remaining, f)
         print(f"Remaining failures saved to {REFETCH_FILE}")
 

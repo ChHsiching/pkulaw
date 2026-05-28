@@ -215,10 +215,10 @@ CLI 中文值 → API id 的映射由程序内置，从 API 动态获取或硬�
 ```
 function estimate(query):
     total = api_search(query).total
-    
+
     if total <= max_pages * page_size (1000):
         return {total: total, partitions: [query]}
-    
+
     # 尝试所有可用分区维度
     for dimension in [CategoryNew_sub, CaseGrade, LastInstanceDate_year, CourtGrade, TrialStep]:
         sub_queries = split_by(query, dimension)
@@ -226,7 +226,7 @@ function estimate(query):
             result = sum(estimate(sub) for sub in sub_queries)
             if result.coverage > best.coverage:
                 best = result
-    
+
     return best
 ```
 
