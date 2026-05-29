@@ -7,12 +7,19 @@ from src.log import setup_logger
 
 
 def cmd_estimate(config: dict) -> None:
-    """Estimate crawlable data volume (placeholder)."""
+    """Estimate crawlable data volume using recursive partitioning."""
+    import time
     from pathlib import Path
 
-    logger = setup_logger(Path(config["settings"]["output_dir"]) / "crawl.log")
+    from src.auth import authenticate, close_browser, launch_browser
+    from src.partition import partition_query
+
+    output_dir = Path(config["settings"]["output_dir"])
+    logger = setup_logger(output_dir / "crawl.log")
+
     logger.info("Estimate command started")
     logger.info("Query: %s", _format_query(config))
+
     print("\n=== PKULaw 数据量估算 ===")
     print("\n检索条件：")
     for node in config["fieldNodes"]:
@@ -23,7 +30,31 @@ def cmd_estimate(config: dict) -> None:
             print(f"  {field}: {', '.join(node['values'])}")
         elif "range" in node:
             print(f"  {field}: {node['range'][0]} ~ {node['range'][1]}")
-    print("\n（API 连接功能将在 Phase 2 实现）\n")
+
+    print("\n正在连接 PKULaw...")
+    pw, browser, context, page = launch_browser(
+        browser_path=config["settings"].get("browser", "/usr/bin/chromium"),
+        headless=config["settings"].get("headless", True),
+    )
+    try:
+        token = authenticate(page)
+        logger.info("Authenticated (%s...)", token[:30])
+        print(f"认证成功 ({token[:30]}...)")
+
+        print("正在估算数据量（递归分区）...\n")
+        start_time = time.time()
+        result = partition_query(page, token, config)
+        elapsed = time.time() - start_time
+
+        _print_estimate_report(result, config, elapsed)
+        logger.info(
+            "Estimate complete: %d total, %d crawlable",
+            result["total"],
+            result["crawlable"],
+        )
+
+    finally:
+        close_browser(pw, browser)
 
 
 def cmd_crawl(config: dict) -> None:
@@ -44,6 +75,61 @@ def cmd_crawl(config: dict) -> None:
         elif "range" in node:
             print(f"  {field}: {node['range'][0]} ~ {node['range'][1]}")
     print("\n（采集功能将在 Phase 3 实现）\n")
+
+
+def _print_estimate_report(result: dict, config: dict, elapsed: float) -> None:
+    """Print the estimate report to stdout."""
+    delay = config["settings"].get("delay", 0.5)
+    total = result["total"]
+    crawlable = result["crawlable"]
+    coverage = (crawlable / total * 100) if total > 0 else 0
+    groups = result["groups"]
+    estimated_hours = groups * 10 * delay / 3600 if groups > 0 else 0
+
+    print(f"数据库总量：{total:,} 篇")
+    print(f"预计可爬取：{crawlable:,} / {total:,} ({coverage:.1f}%)")
+    print(f"分组总数：{groups} 组")
+    print(f"耗时预估：{estimated_hours:.1f} 小时（@{delay}s/请求）")
+    print(f"估算用时：{elapsed:.1f} 秒")
+
+    if result.get("children"):
+        print("\n分区策略：")
+        _print_partition_tree(result, indent=2)
+    print()
+
+
+def _print_partition_tree(node: dict, indent: int = 0) -> None:
+    """Print partition tree recursively."""
+    prefix = " " * indent
+    if node.get("children") is not None:
+        dim = node.get("dimension")
+        dim_label = _format_dimension_label(dim) if dim else ""
+        if dim_label:
+            print(f"{prefix}按 {dim_label} 分区：")
+        for child in node["children"]:
+            label = child.get("label", "?")
+            total = child.get("total", 0)
+            crawlable = child.get("crawlable", 0)
+            if child.get("children") is None:
+                status = "✓" if crawlable >= total else f"{crawlable}/{total}"
+                print(f"{prefix}  {label}: {total:,} → {status}")
+            else:
+                print(f"{prefix}  {label}: {total:,} → 需要进一步分区")
+                _print_partition_tree(child, indent + 4)
+
+
+def _format_dimension_label(dimension: str) -> str:
+    """Return a Chinese label for a dimension."""
+    labels = {
+        "LastInstanceDate": "年份",
+        "CaseGrade": "参照级别",
+        "CategoryNew": "案由分类",
+        "CourtGrade": "法院级别",
+        "TrialStep": "审理程序",
+        "DocumentAttr": "文书类型",
+        "TrialStepCount": "终审结果",
+    }
+    return labels.get(dimension, dimension)
 
 
 def cmd_status() -> None:
