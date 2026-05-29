@@ -9,8 +9,6 @@ repos:
       - id: check-merge-conflict
       - id: check-added-large-files
         args: ['--maxkb=500']
-      - id: no-commit-to-branch
-        args: ['--branch', 'main', '--branch', 'develop']
 
   - repo: https://github.com/psf/black
     rev: 25.1.0
@@ -25,6 +23,10 @@ repos:
 
   - repo: local
     hooks:
+      - id: git-flow-protect
+        name: enforce Git Flow branch rules
+        entry: scripts/hooks/git-flow-protect.sh
+        language: script
       - id: no-co-author
         name: no co-author in commit message
         entry: scripts/hooks/no-co-author.sh
