@@ -1,87 +1,121 @@
-# PKULaw Case Crawler
+# PKULaw CLI Crawler
 
 从 [北大法宝](https://www.pkulaw.com) 司法案例数据库批量爬取案例，用于学术研究。
 
 ## 功能
 
-- **参数化检索** — 支持全文关键词、审理程序、案件类别等组合检索条件
-- **大规模采集** — 按年份分区 + 多排序策略，突破 API 分页上限，单次可采集万级案例
-- **动态段落提取** — 自动扫描所有【】标记段落，无需预设标签名单
+- **递归分区搜索** — 自动选择最优分区维度，突破 API 分页上限
+- **参数化检索** — CLI 参数或 JSON 查询文件，支持全文关键词、审理程序、案件类别等 25 个检索字段
 - **断点续爬** — 进度实时持久化，中断后重新运行自动跳过已采集案例
-- **自动重试** — 浏览器会话崩溃、认证失败、限流等异常自动恢复，无需人工干预
-- **多格式导出** — 同时输出 JSON 和 Excel (.xlsx)，附带分表脚本
-- **日志监控** — 完整爬取日志，支持 `tail -f` 实时监控
-
-## 检索条件
-
-| 字段 | 值 | API 映射 |
-|------|------|---------|
-| 全文 | 抗诉 | `fieldNodes[0].fieldName=FullText` |
-| 审理程序 | 二审、再审 | `fieldNodes[1].fieldName=TrialStep` |
-| 案件类别 | 刑事 | `clusterFilters.CategoryNew=001` |
-| 数据库总量 | ~308,857 篇 | API 返回 total |
+- **自动容错** — 浏览器崩溃、认证失败等异常自动恢复
+- **多格式导出** — JSON、Excel (.xlsx)、CSV，UTF-8 编码
+- **状态监控** — `pkulaw status` 实时查看爬取进度
 
 ## 环境要求
 
 - Python 3.10+
-- Chromium（`/usr/bin/chromium`，或修改 `crawler.py` 中的路径）
+- Chromium（默认 `/usr/bin/chromium`）
 - 学校内网访问 pkulaw.com（IP 自动认证）
 
 ## 安装
 
 ```bash
 pip install -r requirements.txt
-playwright install chromium  # 仅当系统未安装 Chromium 时
+pip install -e .
 ```
 
 ## 使用
 
-### 全量采集
+### 数据量估算
+
+估算符合检索条件的数据量（不实际爬取）：
 
 ```bash
-python main.py
+pkulaw estimate --full-text "抗诉" --trial-step "二审,再审" --category "刑事"
 ```
 
-自动按年份（2026→2000）和 4 种排序（LastInstanceDate Desc/Asc、SortNum Desc/Asc）搜索，去重后逐条抓取详情页。后台运行：
+### 数据爬取
+
+搜索 + 采集 + 导出一步完成：
 
 ```bash
-nohup python -u main.py > output/crawl_full.log 2>&1 &
+# 基本用法
+pkulaw crawl --full-text "抗诉" --category "刑事"
+
+# 指定输出格式和每页条数
+pkulaw crawl --full-text "抗诉" --format json,csv --max-pages 10
+
+# 后台运行
+nohup python -u pkulaw.py crawl --full-text "抗诉" > output/crawl.log 2>&1 &
 ```
 
-### 监控进度
+### 查看状态
 
 ```bash
-tail -f output/crawl_full.log
+pkulaw status
 ```
 
-或使用状态检查脚本：
+输出示例：
+
+```
+=== PKULaw 爬取状态 ===
+时间：2026-05-29 01:30:00
+
+检索条件：
+  全文：抗诉 | 审理程序：二审, 再审 | 案由：刑事
+
+搜索缓存：12,827 条（已完成 ✓）
+已采集：10,500 / 12,827 (81.9%)
+有效数据：9,472 条 (>500字, 90.2%)
+剩余：2,327 条
+输出文件：13,069 条 (output/pkulaw_cases.json, 161MB)
+
+进程：运行中 (PID: 657768, 内存: 1.2GB)
+```
+
+### JSON 查询文件
+
+复杂查询条件写入 JSON 文件：
 
 ```bash
-python3 -c "
-import json
-p=json.load(open('output/progress.json'))
-s=json.load(open('output/search_results.json'))
-print(f'Fetched: {len(p[\"fetched_gids\"])}/{len(s)}')
-"
+pkulaw crawl --query query.json
 ```
 
-### 修复失败案例
+`query.json` 格式：
 
-```bash
-python -c "from src.refetch import refetch; refetch()"
+```json
+{
+  "fieldNodes": [
+    {"field": "FullText", "value": "抗诉"},
+    {"field": "TrialStep", "values": ["二审", "再审"]},
+    {"field": "CategoryNew", "values": ["刑事"]}
+  ],
+  "settings": {
+    "delay": 0.5,
+    "max_pages": 10,
+    "format": ["json", "xlsx"],
+    "output_dir": "output"
+  }
+}
 ```
 
-### 分表导出
+CLI 参数与 JSON 文件可组合使用，CLI 参数覆盖 JSON 中的同名字段。
 
-将大表格按指定条数切分为多个小文件，每个文件保留完整表头：
+### CLI 参数
 
-```bash
-# 默认每 10,000 条一个文件，同时输出 JSON 和 Excel
-python split_excel.py
-
-# 自定义参数
-python split_excel.py --input output/pkulaw_cases.json --output-dir output/split --chunk-size 5000 --format excel
-```
+| 参数 | 字段 | 说明 |
+|------|------|------|
+| `--full-text` | FullText | 全文关键词 |
+| `--title` | Title | 标题关键词 |
+| `--category` | CategoryNew | 案由分类（支持层级，逗号分隔） |
+| `--trial-step` | TrialStep | 审理程序（二审/再审/...） |
+| `--court-grade` | CourtGrade | 法院级别 |
+| `--case-grade` | CaseGrade | 参照级别 |
+| `--date-range` | LastInstanceDate | 审结日期范围 (2020-2025) |
+| `--format` | — | 输出格式 (json,xlsx,csv)，默认 json,xlsx |
+| `--delay` | — | 请求间隔秒数，默认 0.5 |
+| `--max-pages` | — | 每个分区最大页数，默认 10 |
+| `--output-dir` | — | 输出目录，默认 output |
 
 ## 输出
 
@@ -91,81 +125,64 @@ python split_excel.py --input output/pkulaw_cases.json --output-dir output/split
 |------|------|
 | `pkulaw_cases.json` | 全部案例（JSON） |
 | `pkulaw_cases.xlsx` | 全部案例（Excel） |
-| `search_results.json` | 搜索结果缓存（gid 列表） |
-| `progress.json` | 已采集 gid 列表，断点续爬用 |
-| `crawl_full.log` | 完整爬取日志 |
-| `split/` | 分表后的文件目录 |
+| `pkulaw_cases.csv` | 全部案例（CSV, UTF-8 BOM） |
+| `search_results.json` | 搜索结果缓存 + 查询元数据 |
+| `progress.json` | 已采集 gid 列表（断点续爬） |
+| `crawl.log` | 爬取日志 |
 
 ### 数据结构
 
 每条案例包含：
 
 - **基础字段**：`gid`、`url`、`title`
-- **系统字段**：`法宝引证码`、`时效性`
-- **元数据字段**：`案由`、`案号`、`审理法院`、`审结日期`、`审理程序` 等（共 18 个）
-- **【】段落字段**：动态提取所有 `【标签名】` 下的内容（如 `关键词`、`裁判要旨`、`典型意义`、`指导意义`、`检察机关履职过程` 等，共 217 列）
+- **元数据字段**：`案由`、`案号`、`审理法院`、`审结日期`、`审理程序` 等 18 个
+- **【】段落字段**：动态提取所有 `【标签名】` 下的内容
 - **`full_text`**：案例正文全文
-
-### 首次采集结果（2026-05-29）
-
-| 指标 | 数值 |
-|------|------|
-| 搜索覆盖 | 12,827 unique gids |
-| 实际抓取 | 13,594 cases |
-| 有效内容 (>500字) | 12,113 (89%) |
-| 含全文 | 13,561 (99.8%) |
-| 动态列数 | 217 |
 
 ## 项目结构
 
 ```
-├── main.py              # 入口
-├── split_excel.py       # 分表脚本
-├── requirements.txt
+├── pkulaw.py                    # CLI 入口
+├── pyproject.toml               # pip install 支持
 ├── src/
-│   ├── crawler.py       # 主爬虫（认证、搜索、详情采集、导出）
-│   ├── parser.py        # HTML 解析（动态提取所有【】段落）
-│   ├── exporter.py      # JSON / Excel 导出（动态列）
-│   └── refetch.py       # 失败案例重爬
-├── output/              # 输出目录（运行后生成）
+│   ├── cli.py                   # argparse 命令解析
+│   ├── config.py                # 参数映射表（中文→API id）
+│   ├── config_data.py           # 自动生成的 API 映射数据
+│   ├── crawler.py               # 搜索（分区）+ 采集（容错）
+│   ├── parser.py                # HTML 解析（动态【】提取）
+│   ├── exporter.py              # JSON / Excel / CSV 导出
+│   ├── auth.py                  # 浏览器认证 + API 调用
+│   ├── query.py                 # SearchConfig → API body
+│   ├── partition.py             # 递归分区算法
+│   ├── log.py                   # 日志配置
+│   └── refetch.py               # 失败案例重爬
+├── tests/                       # 测试
 └── docs/
-    ├── spec.md          # 设计规格
-    └── plan.md          # 执行计划
+    └── spec-v2.md               # 设计规格
 ```
 
 ## 工作原理
 
 ### 搜索策略
 
-API 对每次查询限制 10 页（每页 100 条 = 1000 条）。爬虫通过 **年份分区 + 多排序** 策略最大化覆盖：
+API 对每次查询限制返回约 1000 条。爬虫使用 **递归分区** 策略：
 
-1. `groupBy: {"LastInstanceDate": "YYYY"}` 按审结日期过滤到单个年份
-2. 对每个年份使用 4 种 `orderBy` 排序（LastInstanceDate Desc/Asc、SortNum Desc/Asc）
-3. 不同排序的结果几乎无重叠，每个年份可获取约 3500-4000 条
-4. 通过 gid 去重确保跨排序不重复
-
-预计覆盖：~12,800 条（约占数据库总量 308,857 的 4%）。这是 API 分页限制下的最大可达量。
-
-### 认证
-
-Playwright 无头浏览器访问 pkulaw.com，学校内网 IP 自动完成 Keycloak OAuth2 认证，从 `localStorage` 提取 JWT token。
+1. 先查询总量，如果超过阈值则按维度（年份 → 参照级别 → 案由 → ...）递归拆分
+2. 对每个分区使用 4 种排序（LastInstanceDate/SortNum × Asc/Desc）
+3. 通过 gid 去重确保不重复
 
 ### 容错机制
 
-- **浏览器会话崩溃**：连续 5 次错误后自动关闭浏览器，10-15s 后重建新会话
-- **认证失败**：外层 try/except 捕获，15s 后重试认证
-- **单个案例失败**：跳过并继续，不阻断整体流程
+- **浏览器会话崩溃**：新建 page tab，失败则重启浏览器
+- **连续 5 次错误**：关闭浏览器，15s 后重建
+- **单个案例失败**：跳过并记录到日志
 - **进度持久化**：每 500 条自动保存，重启后从断点继续
-
-### 解析
-
-动态扫描页面文本中所有 `【...】` 标记，提取标签名和后续内容，存为独立字段。跳过系统标签（法宝引证码、时效性）和纯年份数字。
 
 ## 已知限制
 
-- API 单次查询最多 1000 条结果，多排序后每年约 4000 条，无法获取全部 30 万+
-- 经典案例 (CaseGrade=07) 占总量 90%+，每年可达数万条，受分页限制影响最大
-- JWT token 有效期约 30 分钟，但浏览器 cookie 保持会话，长时间运行通常不受影响
+- API 分页限制导致无法获取全部数据（单分区 ≤ 4000 条）
+- 需要学校内网环境进行认证
+- JWT token 有效期约 30 分钟（浏览器 cookie 保持会话）
 
 ## 许可
 
