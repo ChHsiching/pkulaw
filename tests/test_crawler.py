@@ -1,4 +1,4 @@
-"""Tests for src/crawler.py — partitioning-based search and parameterized fetch."""
+"""Tests for src/crawler.py and pkulaw.py — search, fetch, and cmd_crawl pipeline."""
 
 import json
 from datetime import datetime
@@ -549,3 +549,47 @@ class TestRunFetch:
             result = run_fetch(config, tmp_path, logger)
 
         assert len(result) == 1
+
+
+# ---------------------------------------------------------------------------
+# cmd_crawl — integration of search → fetch → export
+# ---------------------------------------------------------------------------
+
+
+class TestCmdCrawl:
+    def test_calls_search_fetch_export(self, tmp_path):
+        config = {
+            "fieldNodes": [{"field": "FullText", "value": "test"}],
+            "settings": {
+                "output_dir": str(tmp_path),
+                "format": ["json", "csv"],
+                "delay": 0,
+                "browser": "/usr/bin/chromium",
+                "headless": True,
+            },
+        }
+        with (
+            patch(
+                "pkulaw.launch_browser",
+                return_value=(MagicMock(), MagicMock(), MagicMock(), MagicMock()),
+            ),
+            patch("pkulaw.authenticate", return_value="fake_token"),
+            patch("pkulaw.close_browser"),
+            patch(
+                "pkulaw.run_search", return_value=[{"gid": "g1", "title": "C1"}]
+            ) as mock_search,
+            patch(
+                "pkulaw.run_fetch",
+                return_value=[{"gid": "g1", "title": "C1", "full_text": "text"}],
+            ) as mock_fetch,
+            patch("pkulaw.export_json") as mock_ej,
+            patch("pkulaw.export_csv") as mock_ec,
+        ):
+            from pkulaw import cmd_crawl
+
+            cmd_crawl(config)
+
+        mock_search.assert_called_once()
+        mock_fetch.assert_called_once()
+        mock_ej.assert_called_once()
+        mock_ec.assert_called_once()
