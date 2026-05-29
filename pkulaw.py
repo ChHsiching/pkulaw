@@ -2,7 +2,10 @@
 
 import sys
 
+from src.auth import authenticate, close_browser, launch_browser
 from src.cli import build_search_config, create_parser
+from src.crawler import run_fetch, run_search
+from src.exporter import export_csv, export_excel, export_json
 from src.log import setup_logger
 
 
@@ -58,12 +61,15 @@ def cmd_estimate(config: dict) -> None:
 
 
 def cmd_crawl(config: dict) -> None:
-    """Execute crawl (placeholder)."""
+    """Execute crawl: search → fetch → export."""
     from pathlib import Path
 
-    logger = setup_logger(Path(config["settings"]["output_dir"]) / "crawl.log")
+    output_dir = Path(config["settings"]["output_dir"])
+    logger = setup_logger(output_dir / "crawl.log")
+
     logger.info("Crawl command started")
     logger.info("Query: %s", _format_query(config))
+
     print("\n=== PKULaw 采集 ===")
     print("\n检索条件：")
     for node in config["fieldNodes"]:
@@ -74,7 +80,43 @@ def cmd_crawl(config: dict) -> None:
             print(f"  {field}: {', '.join(node['values'])}")
         elif "range" in node:
             print(f"  {field}: {node['range'][0]} ~ {node['range'][1]}")
-    print("\n（采集功能将在 Phase 3 实现）\n")
+
+    # Phase 1 — Search
+    print("\n[Phase 1/3] 搜索中...")
+    pw, browser, context, page = launch_browser(
+        browser_path=config["settings"].get("browser", "/usr/bin/chromium"),
+        headless=config["settings"].get("headless", True),
+    )
+    try:
+        token = authenticate(page)
+        logger.info("Authenticated (%s...)", token[:30])
+        print(f"认证成功 ({token[:30]}...)")
+        search_results = run_search(config, page, token, output_dir, logger)
+    finally:
+        close_browser(pw, browser)
+
+    print(f"搜索完成，找到 {len(search_results)} 条结果")
+
+    # Phase 2 — Fetch
+    print("\n[Phase 2/3] 采集全文...")
+    fetched = run_fetch(config, output_dir, logger)
+    print(f"采集完成，共 {len(fetched)} 条")
+
+    # Phase 3 — Export
+    print("\n[Phase 3/3] 导出中...")
+    formats = config["settings"].get("format", ["json"])
+    if "json" in formats:
+        export_json(fetched, output_dir / "pkulaw_cases.json")
+        logger.info("Exported JSON")
+    if "excel" in formats or "xlsx" in formats:
+        export_excel(fetched, output_dir / "pkulaw_cases.xlsx")
+        logger.info("Exported Excel")
+    if "csv" in formats:
+        export_csv(fetched, output_dir / "pkulaw_cases.csv")
+        logger.info("Exported CSV")
+
+    print(f"\n导出完成：{', '.join(formats)}")
+    print(f"输出目录：{output_dir}\n")
 
 
 def _print_estimate_report(result: dict, config: dict, elapsed: float) -> None:

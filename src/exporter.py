@@ -1,3 +1,4 @@
+import csv
 import json
 import re
 from pathlib import Path
@@ -108,3 +109,27 @@ def export_excel(cases: list[dict], path: Path) -> None:
             ws.column_dimensions[letter].width = 20
 
     wb.save(str(path))
+
+
+def export_csv(cases: list[dict], path: Path) -> None:
+    """Export cases to CSV with UTF-8 BOM, dynamic columns, sanitized values."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    if not cases:
+        path.write_text("", encoding="utf-8")
+        return
+
+    columns = _build_column_order(cases)
+
+    with open(path, "w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(columns)
+        for case in cases:
+            row = []
+            for col in columns:
+                val = _sanitize(case.get(col, ""))
+                if isinstance(val, str):
+                    val = val.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+                row.append(val)
+            writer.writerow(row)
