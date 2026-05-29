@@ -71,7 +71,8 @@ def create_parser() -> argparse.ArgumentParser:
     )
 
     # status subcommand
-    sub.add_parser("status", help="Show crawl status")
+    status = sub.add_parser("status", help="Show crawl status")
+    status.add_argument("--output-dir", default="output", help="Output directory")
 
     return main
 
