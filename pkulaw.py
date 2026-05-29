@@ -1,6 +1,7 @@
 """PKULaw CLI crawler — entry point."""
 
 import sys
+from pathlib import Path
 
 from src.auth import authenticate, close_browser, launch_browser
 from src.cli import build_search_config, create_parser
@@ -174,54 +175,122 @@ def _format_dimension_label(dimension: str) -> str:
     return labels.get(dimension, dimension)
 
 
-def cmd_status() -> None:
+def cmd_status(output_dir: Path | None = None) -> None:
     """Show crawl status from existing data files."""
     import json
-    from pathlib import Path
+    import subprocess
+    from datetime import datetime
 
-    output_dir = Path("output")
+    from src.config import FIELD_DEFINITIONS
+    from src.query import reverse_lookup
 
-    print("\n=== PKULaw 爬取状态 ===")
+    if output_dir is None:
+        output_dir = Path("output")
+    else:
+        output_dir = Path(output_dir)
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"\n=== PKULaw 爬取状态 ===")
+    print(f"时间：{now}")
 
     if not output_dir.exists():
-        print("\n无活跃任务（output/ 目录不存在）\n")
+        print("\n无活跃任务\n")
         return
 
-    # Check for log file
+    # Search results
+    cache_file = output_dir / "search_results.json"
+    total_unique = 0
+    if cache_file.exists():
+        raw = json.loads(cache_file.read_text(encoding="utf-8"))
+        if isinstance(raw, list):
+            # Old format: flat list of results
+            total_unique = len(raw)
+            print(f"\n搜索缓存：{total_unique:,} 条")
+        elif isinstance(raw, dict):
+            total_unique = raw.get("total_unique", len(raw.get("results", [])))
+            status_mark = "✓" if raw.get("results") is not None else "..."
+            print(f"\n搜索缓存：{total_unique:,} 条（已完成 {status_mark}）")
+
+            # Show query conditions
+            query = raw.get("query", {})
+            if isinstance(query, dict) and query.get("fieldNodes"):
+                print("\n检索条件：")
+                for node in query["fieldNodes"]:
+                    field = node.get("field", "")
+                    label = FIELD_DEFINITIONS.get(field, {}).get("show_text", field)
+                    if "value" in node:
+                        print(f"  {label}：{node['value']}")
+                    elif "values" in node:
+                        names = []
+                        for v in node["values"]:
+                            name = reverse_lookup(field, v) or v
+                            names.append(name)
+                        print(f"  {label}：{', '.join(names)}")
+    else:
+        print("\n搜索缓存：无")
+
+    # Progress
+    progress_file = output_dir / "progress.json"
+    fetched_count = 0
+    if progress_file.exists():
+        data = json.loads(progress_file.read_text(encoding="utf-8"))
+        fetched_count = len(data.get("fetched_gids", []))
+
+    if total_unique > 0 and fetched_count > 0:
+        pct = fetched_count / total_unique * 100
+        print(f"\n已采集：{fetched_count:,} / {total_unique:,} ({pct:.1f}%)")
+    elif fetched_count > 0:
+        print(f"\n已采集：{fetched_count:,}")
+
+    # Results file
+    results_file = output_dir / "pkulaw_cases.json"
+    if results_file.exists():
+        cases = json.loads(results_file.read_text(encoding="utf-8"))
+        total_cases = len(cases)
+        valid_cases = sum(1 for c in cases if len(c.get("full_text", "")) > 500)
+        size_mb = results_file.stat().st_size / 1024 / 1024
+
+        if total_cases > 0:
+            valid_pct = valid_cases / total_cases * 100
+            remaining = total_unique - fetched_count
+            print(f"\n有效数据：{valid_cases:,} 条 (>500字, {valid_pct:.1f}%)")
+            print(f"剩余：{remaining:,} 条")
+            print(f"输出文件：{total_cases:,} 条 ({results_file}, {size_mb:.1f}MB)")
+        else:
+            print(f"\n输出文件：0 条 ({results_file})")
+
+    # Process detection
+    try:
+        result = subprocess.run(
+            ["ps", "aux"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        pkulaw_lines = [
+            line
+            for line in result.stdout.strip().split("\n")
+            if "pkulaw" in line and "grep" not in line
+        ]
+        if pkulaw_lines:
+            parts = pkulaw_lines[0].split()
+            pid = parts[1] if len(parts) > 1 else "?"
+            rss_kb = int(parts[5]) if len(parts) > 5 else 0
+            rss_mb = rss_kb / 1024
+            print(f"\n进程：运行中 (PID: {pid}, 内存: {rss_mb:.0f}MB)")
+        else:
+            print("\n进程：已停止")
+    except (subprocess.TimeoutExpired, FileNotFoundError, ValueError):
+        print("\n进程：已停止")
+
+    # Log
     log_file = output_dir / "crawl.log"
     if log_file.exists():
         lines = log_file.read_text(encoding="utf-8").strip().split("\n")
-        print(f"\n最近日志 ({log_file}):")
-        for line in lines[-20:]:
+        last_lines = lines[-20:]
+        print(f"\n最近日志（{log_file} 最后 {len(last_lines)} 行）：")
+        for line in last_lines:
             print(f"  {line}")
-    else:
-        print("\n无日志文件")
-
-    # Check for progress
-    progress_file = output_dir / "progress.json"
-    if progress_file.exists():
-        data = json.loads(progress_file.read_text(encoding="utf-8"))
-        fetched = data.get("fetched_gids", [])
-        print(f"\n进度：已采集 {len(fetched)} 条")
-    else:
-        print("\n无进度文件")
-
-    # Check for search cache
-    cache_file = output_dir / "search_results.json"
-    if cache_file.exists():
-        data = json.loads(cache_file.read_text(encoding="utf-8"))
-        if isinstance(data, list):
-            print(f"搜索缓存：{len(data)} 条")
-        elif isinstance(data, dict):
-            total = data.get("total_unique", len(data.get("results", [])))
-            print(f"搜索缓存：{total} 条")
-
-    # Check for results
-    results_file = output_dir / "pkulaw_cases.json"
-    if results_file.exists():
-        data = json.loads(results_file.read_text(encoding="utf-8"))
-        size_mb = results_file.stat().st_size / 1024 / 1024
-        print(f"结果文件：{len(data)} 条 ({size_mb:.1f} MB)")
 
     print()
 
@@ -251,7 +320,7 @@ def main() -> None:
 
     try:
         if args.command == "status":
-            cmd_status()
+            cmd_status(output_dir=args.output_dir)
         elif args.command in ("estimate", "crawl"):
             config = build_search_config(args)
             if args.command == "estimate":
