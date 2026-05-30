@@ -93,21 +93,38 @@ def cmd_crawl(config: dict) -> None:
         )
 
     print("\n搜索+采集一体化（逐年搜索后立即采集全文）...")
-    pw, browser, context, page = launch_browser(
-        browser_path=config["settings"].get("browser", "/usr/bin/chromium"),
-        headless=config["settings"].get("headless", True),
-    )
-    try:
-        token = authenticate(page)
-        logger.info("Authenticated (%s...)", token[:30])
-        print(f"认证成功 ({token[:30]}...)")
+    headless = config["settings"].get("headless", True)
+    browser_path = config["settings"].get("browser", "/usr/bin/chromium")
+
+    while True:
+        pw, browser, context, page = launch_browser(
+            browser_path=browser_path,
+            headless=headless,
+        )
         try:
-            fetched = run_crawl(config, page, token, output_dir, logger)
-        except KeyboardInterrupt:
-            _print_interrupt_summary(output_dir, initial_fetched)
-            return
-    finally:
-        close_browser(pw, browser)
+            token = authenticate(page)
+            logger.info("Authenticated (%s...)", token[:30])
+            print(f"认证成功 ({token[:30]}...)")
+            try:
+                fetched = run_crawl(config, page, token, output_dir, logger)
+            except KeyboardInterrupt:
+                _print_interrupt_summary(output_dir, initial_fetched)
+                close_browser(pw, browser)
+                return
+            close_browser(pw, browser)
+            break
+        except Exception as e:
+            logger.error(f"Session crashed: {e}")
+            print(f"Session crashed: {e}")
+            try:
+                close_browser(pw, browser)
+            except Exception:
+                pass
+            logger.info("Restart in 15s...")
+            print("Restart in 15s...")
+            import time
+
+            time.sleep(15)
 
     print(f"\n采集完成，共 {len(fetched)} 条")
     print(f"输出目录：{output_dir}")
