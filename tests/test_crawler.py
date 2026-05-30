@@ -536,7 +536,7 @@ class TestRunFetch:
 
 
 class TestCmdCrawl:
-    def test_calls_search_fetch_export(self, tmp_path):
+    def test_calls_run_crawl(self, tmp_path):
         config = {
             "fieldNodes": [{"field": "FullText", "value": "test"}],
             "settings": {
@@ -555,23 +555,15 @@ class TestCmdCrawl:
             patch("pkulaw.authenticate", return_value="fake_token"),
             patch("pkulaw.close_browser"),
             patch(
-                "pkulaw.run_search", return_value=[{"gid": "g1", "title": "C1"}]
-            ) as mock_search,
-            patch(
-                "pkulaw.run_fetch",
+                "pkulaw.run_crawl",
                 return_value=[{"gid": "g1", "title": "C1", "full_text": "text"}],
-            ) as mock_fetch,
-            patch("pkulaw.export_json") as mock_ej,
-            patch("pkulaw.export_csv") as mock_ec,
+            ) as mock_crawl,
         ):
             from pkulaw import cmd_crawl
 
             cmd_crawl(config)
 
-        mock_search.assert_called_once()
-        mock_fetch.assert_called_once()
-        mock_ej.assert_called_once()
-        mock_ec.assert_called_once()
+        mock_crawl.assert_called_once()
 
 
 class TestInterruptSummary:
@@ -648,8 +640,7 @@ class TestInterruptSummary:
             ),
             patch("pkulaw.authenticate", return_value="fake_token"),
             patch("pkulaw.close_browser"),
-            patch("pkulaw.run_search", return_value=[{"gid": "g1", "title": "C1"}]),
-            patch("pkulaw.run_fetch", side_effect=KeyboardInterrupt),
+            patch("pkulaw.run_crawl", side_effect=KeyboardInterrupt),
         ):
             cmd_crawl(config)
 
