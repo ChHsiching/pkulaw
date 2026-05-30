@@ -93,9 +93,42 @@ def search_api(page: Page, ctx: TokenContext, body: dict) -> dict:
     return {}
 ```
 
+**H4 — Unexpected response detection (centralized)**: After exhausting retries, if the
+response has no `total` or `data` keys, raise `RuntimeError`. Fail hard — a partial
+partition tree built on bad data is worse than no tree.
+
+```python
+def _is_unexpected_response(data: dict) -> bool:
+    return "total" not in data and "data" not in data
+
+def search_api(page: Page, ctx: TokenContext, body: dict) -> dict:
+    for attempt in range(2):
+        try:
+            data = page.evaluate(fetch_js, [body, ctx.token])
+            if data.get("_error"):
+                ctx.token = reauthenticate(page)
+                continue
+            if _is_token_error(data):
+                ctx.token = reauthenticate(page)
+                continue
+            if _is_unexpected_response(data):
+                raise RuntimeError(
+                    f"Unexpected API response: code={data.get('code', '?')}, "
+                    f"message={data.get('message', str(data)[:200])}"
+                )
+            return data
+        except Exception as e:
+            if "Execution context" in str(e):
+                ctx.token = reauthenticate(page)
+                continue
+            raise
+    return {}
+```
+
 Key changes:
 - All `token = reauthenticate(page)` → `ctx.token = reauthenticate(page)` (mutates the container)
-- Added `_is_token_error` check as second error detection path
+- `_is_token_error` detects API-level token errors and triggers reauth + retry
+- `_is_unexpected_response` catches any unrecognized response format and raises RuntimeError
 - `data.get("_error")` remains for JS parse failures
 
 #### 3. partition_query updates (`src/partition.py`)
@@ -104,20 +137,7 @@ Key changes:
 
 **search_fn calls**: `(page, token, body)` → `(page, ctx, body)`
 
-**H4 — Error response detection**: New `_check_api_response` raises on unexpected responses.
-
-```python
-def _check_api_response(result: dict, context: str = "API call") -> None:
-    if "total" not in result and "data" not in result:
-        raise RuntimeError(
-            f"{context} returned unexpected response: "
-            f"code={result.get('code', '?')}, message={result.get('message', str(result)[:200])}"
-        )
-```
-
-Called after every `search_fn` invocation:
-- After initial query (line ~96)
-- After each child dimension query (line ~120)
+No separate error checking needed — search_api handles all error detection centrally.
 
 #### 4. run_search updates (`src/crawler.py`)
 
@@ -154,8 +174,8 @@ result = partition_query(page, TokenContext(token=token), config)
 
 | File | Changes |
 |------|---------|
-| `src/auth.py` | Add `TokenContext`, `_is_token_error`; update `search_api` signature + error handling |
-| `src/partition.py` | Add `_check_api_response`; update `partition_query` signature + all `search_fn` calls |
+| `src/auth.py` | Add `TokenContext`, `_is_token_error`, `_is_unexpected_response`; update `search_api` signature + error handling |
+| `src/partition.py` | Update `partition_query` signature + all `search_fn` calls to use `TokenContext` |
 | `src/crawler.py` | Create `TokenContext` in `run_search`; remove uncommitted reauthenticate; pass `ctx` |
 | `pkulaw.py` | Create `TokenContext` in `cmd_estimate` |
 | `tests/test_auth.py` | Update signature test; add token error detection test |
@@ -177,6 +197,6 @@ result = partition_query(page, TokenContext(token=token), config)
 - [ ] `test_token_bug.py` tests pass with `TokenContext` (confirming bugs are fixed)
 - [ ] `partition_query` with simulated token expiry produces correct partition tree
 - [ ] `search_api` detects and recovers from API-level token errors
-- [ ] `_check_api_response` raises on unexpected API responses
+- [ ] `_is_unexpected_response` raises on unexpected API responses
 - [ ] No uncommitted changes remain
 - [ ] Pre-commit hooks pass (black, isort, Git Flow)
