@@ -1,6 +1,7 @@
 """Tests for src/partition.py — recursive partitioning algorithm."""
 
-from unittest.mock import MagicMock
+import time
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -162,3 +163,90 @@ class TestPartitionQueryTokenContext:
         )
 
         assert all(t == "refreshed" for t in tokens_seen)
+
+
+class TestPartitionQueryProactiveRefresh:
+    def test_refreshes_token_after_interval_expires(self):
+        """partition_query should proactively reauthenticate when
+        _refresh_interval seconds have elapsed since _last_refresh."""
+
+        def fake_search(page, ctx, body):
+            gb = body.get("groupBy", {})
+            if gb.get("LastInstanceDate"):
+                return {"total": 100, "data": []}
+            return {"total": 3000, "data": []}
+
+        ctx = TokenContext(token="initial")
+        config = {"fieldNodes": [], "settings": {"max_pages": 10}}
+
+        # Set last_refresh far in the past to trigger refresh
+        with patch(
+            "src.partition.reauthenticate", return_value="refreshed"
+        ) as mock_reauth:
+            partition_query(
+                page=MagicMock(),
+                ctx=ctx,
+                search_config=config,
+                search_fn=fake_search,
+                _refresh_interval=180.0,
+                _last_refresh=time.time() - 200,
+            )
+
+        # Token should have been refreshed proactively
+        assert ctx.token == "refreshed"
+        mock_reauth.assert_called_once()
+
+    def test_no_refresh_when_interval_not_elapsed(self):
+        """No proactive refresh when time since last_refresh < interval."""
+
+        def fake_search(page, ctx, body):
+            gb = body.get("groupBy", {})
+            if gb.get("LastInstanceDate"):
+                return {"total": 100, "data": []}
+            return {"total": 3000, "data": []}
+
+        ctx = TokenContext(token="initial")
+        config = {"fieldNodes": [], "settings": {"max_pages": 10}}
+
+        with patch(
+            "src.partition.reauthenticate", return_value="refreshed"
+        ) as mock_reauth:
+            partition_query(
+                page=MagicMock(),
+                ctx=ctx,
+                search_config=config,
+                search_fn=fake_search,
+                _refresh_interval=180.0,
+                _last_refresh=time.time(),
+            )
+
+        assert ctx.token == "initial"
+        mock_reauth.assert_not_called()
+
+    def test_refresh_propagates_to_recursive_calls(self):
+        """After proactive refresh, recursive calls use the new token."""
+
+        tokens_seen = []
+
+        def fake_search(page, ctx, body):
+            tokens_seen.append(ctx.token)
+            gb = body.get("groupBy", {})
+            if gb.get("LastInstanceDate"):
+                return {"total": 100, "data": []}
+            return {"total": 3000, "data": []}
+
+        ctx = TokenContext(token="initial")
+        config = {"fieldNodes": [], "settings": {"max_pages": 10}}
+
+        with patch("src.partition.reauthenticate", return_value="proactive"):
+            partition_query(
+                page=MagicMock(),
+                ctx=ctx,
+                search_config=config,
+                search_fn=fake_search,
+                _refresh_interval=180.0,
+                _last_refresh=time.time() - 200,
+            )
+
+        # All calls after refresh should use "proactive" token
+        assert all(t == "proactive" for t in tokens_seen)
