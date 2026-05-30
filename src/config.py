@@ -94,6 +94,9 @@ def resolve_value(field: str, path: str) -> str:
     if path in values.values():
         return path
 
+    if path.isdigit() and len(path) >= 6:
+        return path
+
     raise ValueError(f"Unknown value '{path}' for field '{field}'")
 
 
