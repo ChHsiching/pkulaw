@@ -1,4 +1,4 @@
-"""Crawler for PKULaw cases — incremental search + fetch using partitioning."""
+"""Crawler for PKULaw cases — incremental search + fetch."""
 
 import json
 import time
@@ -14,7 +14,7 @@ from src.auth import (
 )
 from src.exporter import export_excel, export_json
 from src.parser import parse_case
-from src.partition import SORT_ORDERS, _add_dimension_filter, partition_query
+from src.partition import SORT_ORDERS
 from src.query import PAGE_SIZE, build_api_body
 
 INTERMEDIATE_INTERVAL = 500
@@ -62,7 +62,7 @@ def _save_progress(output_dir: Path, fetched_gids: set[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Query matching and partition tree helpers
+# Query matching
 # ---------------------------------------------------------------------------
 
 
@@ -78,27 +78,6 @@ def _matches_query(cached: dict, search_config: dict) -> bool:
     return cached_nodes == config_nodes
 
 
-def _collect_leaf_searches(tree: dict, base_config: dict) -> list[tuple[str, dict]]:
-    """Flatten partition tree to leaf (label, config) pairs.
-
-    At each non-leaf level, applies the dimension filter to derive a child
-    search config before recursing.
-    """
-    if tree.get("children") is None:
-        # Leaf node
-        return [(tree["label"], base_config)]
-
-    dimension = tree.get("dimension")
-    children = tree.get("children", [])
-    leaves: list[tuple[str, dict]] = []
-
-    for child in children:
-        child_config = _add_dimension_filter(base_config, dimension, child["label"])
-        leaves.extend(_collect_leaf_searches(child, child_config))
-
-    return leaves
-
-
 # ---------------------------------------------------------------------------
 # Search results save
 # ---------------------------------------------------------------------------
@@ -108,20 +87,13 @@ def _save_search_results(
     output_dir: Path,
     results: list[dict],
     search_config: dict,
-    partition_tree: dict,
     started_at: datetime,
     completed_at: datetime,
 ) -> None:
-    """Save enhanced search_results.json with query metadata."""
+    """Save search_results.json with query metadata."""
     output_dir.mkdir(parents=True, exist_ok=True)
     data = {
         "query": {"fieldNodes": search_config.get("fieldNodes", [])},
-        "partition_strategy": {
-            "dimension": partition_tree.get("dimension"),
-            "total": partition_tree.get("total"),
-            "crawlable": partition_tree.get("crawlable"),
-            "groups": partition_tree.get("groups"),
-        },
         "total_unique": len(results),
         "started_at": started_at.isoformat(),
         "completed_at": completed_at.isoformat(),
@@ -133,7 +105,7 @@ def _save_search_results(
 
 
 # ---------------------------------------------------------------------------
-# run_search — partitioning-based search
+# run_search — year-by-year pagination
 # ---------------------------------------------------------------------------
 
 
@@ -144,41 +116,56 @@ def run_search(
     output_dir: Path,
     logger,
 ) -> list[dict]:
-    """Search using partitioning to collect all gids. Returns list of {gid, title}.
+    """Search using year-by-year pagination. Returns list of {gid, title}.
 
-    1. Check cache — skip if query matches
-    2. Partition the query space
-    3. For each leaf, for each sort order, paginate through results
-    4. Deduplicate by gid
-    5. Save enhanced search_results.json
+    Iterates years from current down to 2000, for each sort order,
+    paginating through results. Resumes from last saved year on restart.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     max_pages = search_config.get("settings", {}).get("max_pages", 10)
+    delay = search_config.get("settings", {}).get("delay", 0.3)
+    ctx = TokenContext(token=token)
 
-    # Check if cached results match current query
+    # Check if cached results match current query and are complete
     cache_file = _search_cache_file(output_dir)
     if cache_file.exists():
         cached = json.loads(cache_file.read_text())
         if _matches_query(cached, search_config):
-            logger.info("Search cache matches current query, skipping search.")
-            return cached.get("results", [])
+            results = cached.get("results", [])
+            if results:
+                last_year = results[-1].get("search_year", 2026)
+                if last_year <= 2000:
+                    logger.info("Search cache complete, skipping search.")
+                    return results
 
     started_at = datetime.now()
-
-    # Partition the query
-    ctx = TokenContext(token=token)
-    partition_tree = partition_query(page, ctx, search_config)
-    leaves = _collect_leaf_searches(partition_tree, search_config)
-
     results: list[dict] = []
     seen_gids: set[str] = set()
+    start_year = 2026
 
-    for label, leaf_config in leaves:
+    # Resume from partial cache
+    if cache_file.exists():
+        cached = json.loads(cache_file.read_text())
+        cached_results = (
+            cached.get("results", []) if isinstance(cached, dict) else cached
+        )
+        for r in cached_results:
+            seen_gids.add(r["gid"])
+        results = list(cached_results)
+        if cached_results:
+            last_year = cached_results[-1].get("search_year", 2026)
+            start_year = last_year - 1
+        logger.info(f"Resuming from year {start_year}, {len(results)} existing gids")
+
+    for year in range(start_year, 1999, -1):
         for sort_order in SORT_ORDERS:
             page_idx = 0
             while page_idx < max_pages:
                 body = build_api_body(
-                    leaf_config, page_index=page_idx, order_by=sort_order
+                    search_config,
+                    page_index=page_idx,
+                    order_by=sort_order,
+                    group_by={"LastInstanceDate": str(year)},
                 )
                 data = search_api(page, ctx, body)
                 items = data.get("data", [])
@@ -192,26 +179,35 @@ def run_search(
                     if gid in seen_gids:
                         continue
                     seen_gids.add(gid)
-                    results.append({"gid": gid, "title": item.get("title", "")})
+                    results.append(
+                        {
+                            "gid": gid,
+                            "title": item.get("title", ""),
+                            "search_year": year,
+                        }
+                    )
                     new_count += 1
+
+                if page_idx == 0:
+                    total = data.get("total", 0)
+                    logger.info(f"  {year} [{sort_order}]: total={total}, +{new_count}")
 
                 if new_count == 0:
                     break
 
                 page_idx += 1
-                time.sleep(search_config.get("settings", {}).get("delay", 0.3))
+                time.sleep(delay)
 
-        # Save incrementally after each leaf
+        # Save incrementally after each year
         completed_at = datetime.now()
         _save_search_results(
             output_dir,
             results,
             search_config,
-            partition_tree,
             started_at=started_at,
             completed_at=completed_at,
         )
-        logger.info(f"Leaf '{label}': {len(results)} total unique gids")
+        logger.info(f"Year {year}: {len(results)} total unique")
 
     return results
 

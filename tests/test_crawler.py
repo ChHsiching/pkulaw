@@ -8,7 +8,6 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 
 from src.crawler import (
-    _collect_leaf_searches,
     _excel_file,
     _load_progress,
     _matches_query,
@@ -110,124 +109,6 @@ class TestMatchesQuery:
 
 
 # ---------------------------------------------------------------------------
-# _collect_leaf_searches
-# ---------------------------------------------------------------------------
-
-
-class TestCollectLeafSearches:
-    def test_single_leaf(self):
-        tree = {
-            "label": "全部",
-            "total": 100,
-            "crawlable": 100,
-            "groups": 4,
-            "dimension": None,
-            "children": None,
-        }
-        base = {"fieldNodes": [{"field": "FullText", "value": "test"}]}
-        leaves = _collect_leaf_searches(tree, base)
-        assert len(leaves) == 1
-        label, config = leaves[0]
-        assert label == "全部"
-        assert config["fieldNodes"] == base["fieldNodes"]
-
-    def test_flat_partition(self):
-        """LastInstanceDate with 2 children → 2 leaves with groupBy applied."""
-        tree = {
-            "label": "全部",
-            "total": 1500,
-            "crawlable": 1500,
-            "groups": 8,
-            "dimension": "LastInstanceDate",
-            "children": [
-                {
-                    "label": "2025",
-                    "total": 500,
-                    "crawlable": 500,
-                    "groups": 4,
-                    "dimension": None,
-                    "children": None,
-                },
-                {
-                    "label": "2024",
-                    "total": 500,
-                    "crawlable": 500,
-                    "groups": 4,
-                    "dimension": None,
-                    "children": None,
-                },
-            ],
-        }
-        base = {"fieldNodes": []}
-        leaves = _collect_leaf_searches(tree, base)
-        assert len(leaves) == 2
-        labels = [l for l, _ in leaves]
-        assert "2025" in labels
-        assert "2024" in labels
-        # Each leaf config should have _groupBy set
-        for _, config in leaves:
-            assert "_groupBy" in config
-            assert "LastInstanceDate" in config["_groupBy"]
-
-    def test_nested_partition(self):
-        """LastInstanceDate -> CaseGrade nesting."""
-        tree = {
-            "label": "全部",
-            "total": 5000,
-            "crawlable": 5000,
-            "groups": 16,
-            "dimension": "LastInstanceDate",
-            "children": [
-                {
-                    "label": "2025",
-                    "total": 2000,
-                    "crawlable": 2000,
-                    "groups": 8,
-                    "dimension": "CaseGrade",
-                    "children": [
-                        {
-                            "label": "01",
-                            "total": 500,
-                            "crawlable": 500,
-                            "groups": 4,
-                            "dimension": None,
-                            "children": None,
-                        },
-                        {
-                            "label": "02",
-                            "total": 500,
-                            "crawlable": 500,
-                            "groups": 4,
-                            "dimension": None,
-                            "children": None,
-                        },
-                    ],
-                },
-                {
-                    "label": "2024",
-                    "total": 500,
-                    "crawlable": 500,
-                    "groups": 4,
-                    "dimension": None,
-                    "children": None,
-                },
-            ],
-        }
-        base = {"fieldNodes": []}
-        leaves = _collect_leaf_searches(tree, base)
-        assert len(leaves) == 3
-        labels = [l for l, _ in leaves]
-        assert "2024" in labels
-        # Nested leaves should have both LastInstanceDate and CaseGrade filters
-        for label, config in leaves:
-            if label in ("01", "02"):
-                assert config["_groupBy"]["LastInstanceDate"] == "2025"
-                # CaseGrade should be in fieldNodes
-                fields = [n["field"] for n in config["fieldNodes"]]
-                assert "CaseGrade" in fields
-
-
-# ---------------------------------------------------------------------------
 # _save_search_results
 # ---------------------------------------------------------------------------
 
@@ -236,19 +117,16 @@ class TestSaveSearchResults:
     def test_saves_enhanced_format(self, tmp_path):
         results = [{"gid": "g1", "title": "t1"}]
         config = {"fieldNodes": [{"field": "FullText", "value": "test"}]}
-        tree = {"label": "全部", "total": 100}
         now = datetime(2026, 1, 1)
         _save_search_results(
             tmp_path,
             results,
             config,
-            tree,
             started_at=now,
             completed_at=now,
         )
         data = json.loads((tmp_path / "search_results.json").read_text())
         assert "query" in data
-        assert "partition_strategy" in data
         assert "total_unique" in data
         assert data["total_unique"] == 1
         assert data["results"] == results
@@ -259,7 +137,6 @@ class TestSaveSearchResults:
             tmp_path,
             [],
             config,
-            {"label": "全部", "total": 0},
             started_at=datetime(2026, 1, 1),
             completed_at=datetime(2026, 1, 2),
         )
@@ -303,49 +180,38 @@ class TestSaveAll:
 
 
 # ---------------------------------------------------------------------------
-# run_search
+# run_search — year-by-year pagination
 # ---------------------------------------------------------------------------
 
 
 class TestRunSearch:
     @patch("src.crawler.time.sleep")
     @patch("src.crawler.search_api")
-    @patch("src.crawler.partition_query")
-    def test_collects_unique_gids(self, mock_partition, mock_api, mock_sleep, tmp_path):
-        """Single leaf, 4 sort orders with max_pages=1, verify 3 unique gids."""
-        # Partition returns single leaf
-        mock_partition.return_value = {
-            "label": "全部",
-            "total": 3,
-            "crawlable": 3,
-            "groups": 4,
-            "dimension": None,
-            "children": None,
-        }
-        # search_api returns overlapping results for different sort orders
-        page1_sort1 = {
-            "data": [
-                {"gid": "g1", "title": "t1"},
-                {"gid": "g2", "title": "t2"},
-            ],
-            "total": 3,
-        }
-        page1_sort2 = {
-            "data": [
-                {"gid": "g2", "title": "t2"},
-                {"gid": "g3", "title": "t3"},
-            ],
-            "total": 3,
-        }
-        page1_sort3 = {
-            "data": [
-                {"gid": "g1", "title": "t1"},
-            ],
-            "total": 1,
-        }
-        page1_sort4 = {"data": [], "total": 0}
-        mock_api.side_effect = [page1_sort1, page1_sort2, page1_sort3, page1_sort4]
+    def test_collects_unique_gids(self, mock_api, mock_sleep, tmp_path):
+        """Year-by-year pagination deduplicates gids across sort orders."""
 
+        def api_side_effect(page, ctx, body):
+            gb = body.get("groupBy", {})
+            year = gb.get("LastInstanceDate", "")
+            if year == "2025":
+                return {
+                    "data": [
+                        {"gid": "g1", "title": "t1"},
+                        {"gid": "g2", "title": "t2"},
+                    ],
+                    "total": 2,
+                }
+            if year == "2024":
+                return {
+                    "data": [
+                        {"gid": "g2", "title": "t2"},
+                        {"gid": "g3", "title": "t3"},
+                    ],
+                    "total": 2,
+                }
+            return {"data": [], "total": 0}
+
+        mock_api.side_effect = api_side_effect
         config = {
             "fieldNodes": [{"field": "FullText", "value": "test"}],
             "settings": {"max_pages": 1},
@@ -353,26 +219,14 @@ class TestRunSearch:
         logger = MagicMock()
         results = run_search(config, "fake_page", "fake_token", tmp_path, logger)
 
-        # 3 unique gids
         gids = {r["gid"] for r in results}
         assert gids == {"g1", "g2", "g3"}
         assert len(results) == 3
 
     @patch("src.crawler.time.sleep")
     @patch("src.crawler.search_api")
-    @patch("src.crawler.partition_query")
-    def test_saves_enhanced_search_results(
-        self, mock_partition, mock_api, mock_sleep, tmp_path
-    ):
-        """Verify search_results.json has query, partition_strategy, total_unique."""
-        mock_partition.return_value = {
-            "label": "全部",
-            "total": 0,
-            "crawlable": 0,
-            "groups": 0,
-            "dimension": None,
-            "children": None,
-        }
+    def test_saves_search_results(self, mock_api, mock_sleep, tmp_path):
+        """Verify search_results.json has query and total_unique."""
         mock_api.return_value = {"data": [], "total": 0}
 
         config = {
@@ -386,66 +240,99 @@ class TestRunSearch:
         assert cache_file.exists()
         data = json.loads(cache_file.read_text())
         assert "query" in data
-        assert "partition_strategy" in data
         assert "total_unique" in data
 
     @patch("src.crawler.time.sleep")
     @patch("src.crawler.search_api")
-    @patch("src.crawler.partition_query")
-    def test_skips_when_cache_matches(
-        self, mock_partition, mock_api, mock_sleep, tmp_path
+    def test_skips_when_cache_matches_and_complete(
+        self, mock_api, mock_sleep, tmp_path
     ):
-        """Pre-write cache with matching fieldNodes → partition_query NOT called."""
+        """Pre-write complete cache with matching fieldNodes → search_api NOT called."""
         config = {
             "fieldNodes": [{"field": "FullText", "value": "抗诉"}],
             "settings": {"max_pages": 1},
         }
-        # Write matching cache
+        # Write matching complete cache (last year = 2000)
         cache = {
             "query": {"fieldNodes": config["fieldNodes"]},
-            "results": [{"gid": "g1", "title": "t1"}],
+            "results": [
+                {"gid": "g1", "title": "t1", "search_year": 2000},
+            ],
         }
         (tmp_path / "search_results.json").write_text(json.dumps(cache))
 
         logger = MagicMock()
         results = run_search(config, "fake_page", "fake_token", tmp_path, logger)
 
-        mock_partition.assert_not_called()
         mock_api.assert_not_called()
         assert len(results) == 1
 
     @patch("src.crawler.time.sleep")
     @patch("src.crawler.search_api")
-    @patch("src.crawler.partition_query")
-    def test_reruns_when_cache_differs(
-        self, mock_partition, mock_api, mock_sleep, tmp_path
-    ):
-        """Pre-write cache with different fieldNodes → partition_query IS called."""
+    def test_resumes_when_cache_incomplete(self, mock_api, mock_sleep, tmp_path):
+        """Partial cache with last_year > 2000 → search_api IS called for remaining years."""
         config = {
             "fieldNodes": [{"field": "FullText", "value": "抗诉"}],
             "settings": {"max_pages": 1},
         }
-        # Write non-matching cache
+        # Write matching but incomplete cache (last year = 2024, so resumes from 2023)
         cache = {
-            "query": {"fieldNodes": [{"field": "FullText", "value": "old"}]},
-            "results": [],
+            "query": {"fieldNodes": config["fieldNodes"]},
+            "results": [
+                {"gid": "g1", "title": "t1", "search_year": 2024},
+            ],
         }
         (tmp_path / "search_results.json").write_text(json.dumps(cache))
 
-        mock_partition.return_value = {
-            "label": "全部",
-            "total": 0,
-            "crawlable": 0,
-            "groups": 0,
-            "dimension": None,
-            "children": None,
-        }
         mock_api.return_value = {"data": [], "total": 0}
-
         logger = MagicMock()
         run_search(config, "fake_page", "fake_token", tmp_path, logger)
 
-        mock_partition.assert_called_once()
+        mock_api.assert_called()
+
+    @patch("src.crawler.time.sleep")
+    @patch("src.crawler.search_api")
+    def test_passes_group_by_year(self, mock_api, mock_sleep, tmp_path):
+        """Each search_api call should include groupBy with LastInstanceDate."""
+        call_bodies = []
+
+        def capture_api(page, ctx, body):
+            call_bodies.append(body)
+            return {"data": [], "total": 0}
+
+        mock_api.side_effect = capture_api
+        config = {
+            "fieldNodes": [{"field": "FullText", "value": "test"}],
+            "settings": {"max_pages": 1},
+        }
+        logger = MagicMock()
+        run_search(config, "fake_page", "fake_token", tmp_path, logger)
+
+        for body in call_bodies:
+            assert "LastInstanceDate" in body.get("groupBy", {})
+
+    @patch("src.crawler.time.sleep")
+    @patch("src.crawler.search_api")
+    def test_uses_all_sort_orders(self, mock_api, mock_sleep, tmp_path):
+        """For each year, all 4 sort orders should be tried."""
+        years_seen = set()
+
+        def track_api(page, ctx, body):
+            gb = body.get("groupBy", {})
+            year = gb.get("LastInstanceDate", "")
+            if year == "2025":
+                years_seen.add(body.get("orderbyExpression"))
+            return {"data": [], "total": 0}
+
+        mock_api.side_effect = track_api
+        config = {
+            "fieldNodes": [{"field": "FullText", "value": "test"}],
+            "settings": {"max_pages": 1},
+        }
+        logger = MagicMock()
+        run_search(config, "fake_page", "fake_token", tmp_path, logger)
+
+        assert len(years_seen) == 4
 
 
 # ---------------------------------------------------------------------------
