@@ -69,6 +69,12 @@ def create_parser() -> argparse.ArgumentParser:
     crawl.add_argument(
         "--chunk-size", type=int, default=500, help="Records per output chunk"
     )
+    crawl.add_argument(
+        "--max-cases",
+        type=int,
+        default=0,
+        help="Stop after fetching N total cases (0=unlimited)",
+    )
 
     # status subcommand
     status = sub.add_parser("status", help="Show crawl status")
@@ -164,6 +170,7 @@ def build_search_config(args: argparse.Namespace) -> dict:
         "max_pages": 10,
         "format": ["json", "xlsx"],
         "output_dir": "output",
+        "max_cases": 0,
     }
 
     # When no JSON query file, CLI defaults apply directly
@@ -173,12 +180,14 @@ def build_search_config(args: argparse.Namespace) -> dict:
         settings["max_pages"] = args.max_pages
         settings["format"] = [f.strip() for f in args.format.split(",")]
         settings["output_dir"] = args.output_dir
+        settings["max_cases"] = getattr(args, "max_cases", 0)
     else:
         # JSON settings already loaded above; only override if CLI explicitly differs
         settings.setdefault("delay", args.delay)
         settings.setdefault("max_pages", args.max_pages)
         settings.setdefault("format", [f.strip() for f in args.format.split(",")])
         settings.setdefault("output_dir", args.output_dir)
+        settings.setdefault("max_cases", getattr(args, "max_cases", 0))
 
     # Fill any remaining gaps with hardcoded defaults
     for key, val in _SETTINGS_DEFAULTS.items():

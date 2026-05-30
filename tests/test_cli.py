@@ -118,6 +118,16 @@ class TestParserCrawlArgs:
         assert args.output_dir == "/tmp/out"
         assert args.chunk_size == 500
 
+    def test_crawl_accepts_max_cases(self):
+        parser = create_parser()
+        args = parser.parse_args(["crawl", "--max-cases", "2000"])
+        assert args.max_cases == 2000
+
+    def test_max_cases_default_is_zero(self):
+        parser = create_parser()
+        args = parser.parse_args(["crawl"])
+        assert args.max_cases == 0
+
 
 class TestBuildSearchConfig:
     def test_text_field(self):
@@ -168,6 +178,18 @@ class TestBuildSearchConfig:
         assert config["settings"]["delay"] == 1.0
         assert config["settings"]["max_pages"] == 5
         assert config["settings"]["format"] == ["json"]
+
+    def test_max_cases_in_settings(self):
+        parser = create_parser()
+        args = parser.parse_args(["crawl", "--max-cases", "100"])
+        config = build_search_config(args)
+        assert config["settings"]["max_cases"] == 100
+
+    def test_max_cases_default_in_settings(self):
+        parser = create_parser()
+        args = parser.parse_args(["crawl"])
+        config = build_search_config(args)
+        assert config["settings"]["max_cases"] == 0
 
     def test_date_range(self):
         parser = create_parser()

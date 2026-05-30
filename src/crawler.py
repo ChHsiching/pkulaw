@@ -258,6 +258,7 @@ def run_fetch(search_config: dict, output_dir: Path, logger) -> list[dict]:
     delay = settings.get("delay", 0.3)
     browser_path = settings.get("browser_path", "/usr/bin/chromium")
     headless = settings.get("headless", True)
+    max_cases = settings.get("max_cases", 0)
 
     cache_file = _search_cache_file(output_dir)
     if not cache_file.exists():
@@ -289,6 +290,11 @@ def run_fetch(search_config: dict, output_dir: Path, logger) -> list[dict]:
 
         if not remaining:
             logger.info("All fetched!")
+            _save_all(results, fetched_gids, output_dir, logger)
+            return results
+
+        if max_cases > 0 and len(fetched_gids) >= max_cases:
+            logger.info(f"Max cases limit reached ({max_cases})")
             _save_all(results, fetched_gids, output_dir, logger)
             return results
 
@@ -333,6 +339,9 @@ def run_fetch(search_config: dict, output_dir: Path, logger) -> list[dict]:
                     fetched_gids.add(gid)
                     consecutive_errors = 0
 
+                    if max_cases > 0 and len(fetched_gids) >= max_cases:
+                        break
+
                     if (i + 1) % 50 == 0:
                         logger.info(f"[{i+1}/{len(remaining)}] ({title[:40]})")
 
@@ -374,5 +383,10 @@ def run_fetch(search_config: dict, output_dir: Path, logger) -> list[dict]:
             logger.error(f"Session crashed: {e}")
 
         _save_all(results, fetched_gids, output_dir, logger)
+
+        if max_cases > 0 and len(fetched_gids) >= max_cases:
+            logger.info(f"Max cases limit reached ({max_cases})")
+            return results
+
         logger.info("Restart in 15s...")
         time.sleep(15)

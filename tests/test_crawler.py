@@ -550,6 +550,98 @@ class TestRunFetch:
 
         assert len(result) == 1
 
+    @patch("src.crawler.time.sleep")
+    @patch("src.crawler.parse_case")
+    @patch("src.crawler.authenticate", return_value="token123")
+    @patch("src.crawler.launch_browser")
+    def test_max_cases_stops_at_limit(
+        self, mock_launch, mock_auth, mock_parse, mock_sleep, tmp_path
+    ):
+        """run_fetch stops when total fetched count reaches max_cases."""
+        from unittest.mock import MagicMock as MM
+
+        cases_meta = [{"gid": f"g{i}", "title": f"t{i}"} for i in range(10)]
+        (tmp_path / "search_results.json").write_text(
+            json.dumps({"query": {"fieldNodes": []}, "results": cases_meta})
+        )
+        (tmp_path / "pkulaw_cases.json").write_text("[]")
+
+        mock_parse.side_effect = [
+            {"gid": f"g{i}", "title": f"t{i}", "full_text": "x" * 600}
+            for i in range(10)
+        ]
+
+        mock_pw, mock_browser, mock_ctx, mock_page = MM(), MM(), MM(), MM()
+        mock_page.evaluate.return_value = 2000
+        mock_page.content.return_value = (
+            "<html><body><div class='fulltext-wrap'>text</div></body></html>"
+        )
+        mock_launch.return_value = (mock_pw, mock_browser, mock_ctx, mock_page)
+
+        with patch("src.crawler.close_browser"):
+            config = {
+                "fieldNodes": [],
+                "settings": {
+                    "delay": 0.1,
+                    "browser_path": "/usr/bin/chromium",
+                    "headless": True,
+                    "max_cases": 5,
+                },
+            }
+            logger = MM()
+            result = run_fetch(config, tmp_path, logger)
+
+        assert len(result) == 5
+        assert mock_launch.call_count == 1
+
+    @patch("src.crawler.time.sleep")
+    @patch("src.crawler.parse_case")
+    @patch("src.crawler.authenticate", return_value="token123")
+    @patch("src.crawler.launch_browser")
+    def test_max_cases_with_resume(
+        self, mock_launch, mock_auth, mock_parse, mock_sleep, tmp_path
+    ):
+        """run_fetch respects max_cases including already-fetched progress."""
+        from unittest.mock import MagicMock as MM
+
+        cases_meta = [{"gid": f"g{i}", "title": f"t{i}"} for i in range(12)]
+        (tmp_path / "search_results.json").write_text(
+            json.dumps({"query": {"fieldNodes": []}, "results": cases_meta})
+        )
+        (tmp_path / "progress.json").write_text(
+            json.dumps({"fetched_gids": [f"g{i}" for i in range(7)]})
+        )
+        (tmp_path / "pkulaw_cases.json").write_text("[]")
+
+        mock_parse.side_effect = [
+            {"gid": f"g{i}", "title": f"t{i}", "full_text": "x" * 600}
+            for i in range(7, 12)
+        ]
+
+        mock_pw, mock_browser, mock_ctx, mock_page = MM(), MM(), MM(), MM()
+        mock_page.evaluate.return_value = 2000
+        mock_page.content.return_value = (
+            "<html><body><div class='fulltext-wrap'>text</div></body></html>"
+        )
+        mock_launch.return_value = (mock_pw, mock_browser, mock_ctx, mock_page)
+
+        with patch("src.crawler.close_browser"):
+            config = {
+                "fieldNodes": [],
+                "settings": {
+                    "delay": 0.1,
+                    "browser_path": "/usr/bin/chromium",
+                    "headless": True,
+                    "max_cases": 10,
+                },
+            }
+            logger = MM()
+            result = run_fetch(config, tmp_path, logger)
+
+        # 7 already fetched + 3 more to reach max_cases=10
+        assert len(result) == 3
+        assert mock_launch.call_count == 1
+
 
 # ---------------------------------------------------------------------------
 # cmd_crawl — integration of search → fetch → export
