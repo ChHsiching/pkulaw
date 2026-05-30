@@ -106,6 +106,7 @@ def partition_query(
         _last_refresh = time.time()
 
     threshold = max_pages * page_size
+    delay = search_config.get("settings", {}).get("delay", 0.3)
 
     body = build_api_body(search_config)
     result = search_fn(page, ctx, body)
@@ -134,6 +135,7 @@ def partition_query(
             child_body = build_api_body(child_config)
             child_result = search_fn(page, ctx, child_body)
             child_total = child_result.get("total", 0)
+            time.sleep(delay)
 
             if child_total == 0:
                 continue

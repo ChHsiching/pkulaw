@@ -101,13 +101,18 @@ def _is_unexpected_response(data: dict) -> bool:
     return "total" not in data and "data" not in data
 
 
+def _is_security_block(data: dict) -> bool:
+    return data.get("code") == "SecurityProtection"
+
+
 def search_api(page: Page, ctx: TokenContext, body: dict) -> dict:
     """Send a search request to PKULaw API. Returns response dict.
 
     Retries once on auth errors (re-authenticates and retries).
+    Retries with backoff on SecurityProtection responses.
     Raises RuntimeError on unexpected API responses.
     """
-    for attempt in range(2):
+    for attempt in range(3):
         try:
             data = page.evaluate(
                 """async ([body, token]) => {
@@ -127,6 +132,11 @@ def search_api(page: Page, ctx: TokenContext, body: dict) -> dict:
                 continue
             if _is_token_error(data):
                 ctx.token = reauthenticate(page)
+                continue
+            if _is_security_block(data):
+                import time
+
+                time.sleep(30 * (attempt + 1))
                 continue
             if _is_unexpected_response(data):
                 raise RuntimeError(

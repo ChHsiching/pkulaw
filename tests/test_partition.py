@@ -12,6 +12,15 @@ from src.partition import (
     partition_query,
 )
 
+# Mock time.sleep globally for partition tests to avoid real delays
+pytestmark = pytest.mark.usefixtures("_mock_sleep")
+
+
+@pytest.fixture
+def _mock_sleep():
+    with patch("src.partition.time.sleep"):
+        yield
+
 
 class TestGetAvailableDimensions:
     def test_all_available_when_empty_query(self):
