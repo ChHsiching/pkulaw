@@ -122,3 +122,40 @@ class TestCliToFieldMap:
             assert (
                 field_name in FIELD_DEFINITIONS
             ), f"{flag} maps to unknown field {field_name}"
+
+
+class TestCrimeNameResolution:
+    """All 20 target crime names must resolve to correct CategoryNew IDs."""
+
+    CRIME_IDS = {
+        "危险驾驶罪": "001002050",
+        "交通肇事罪": "001002037",
+        "盗窃罪": "001005002",
+        "诈骗罪": "001005003",
+        "合同诈骗罪": "001003008004",
+        "故意伤害罪": "001004003",
+        "强奸罪": "001004005",
+        "非法拘禁罪": "001004008",
+        "抢劫罪": "001005001",
+        "抢夺罪": "001005004",
+        "敲诈勒索罪": "001005010",
+        "妨害公务罪": "001006001001",
+        "聚众斗殴罪": "001006001020",
+        "寻衅滋事罪": "001006001021",
+        "掩饰、隐瞒犯罪所得、犯罪所得收益罪": "001006002018",
+        "走私、贩卖、运输、制造毒品罪": "001006007",
+        "非法持有毒品罪": "001006007002",
+        "容留他人吸毒罪": "001006007011",
+        "信用卡诈骗罪": "001003005006",
+        "故意毁坏财物罪": "001005011",
+    }
+
+    def test_all_20_crime_names_resolve(self):
+        for name, expected_id in self.CRIME_IDS.items():
+            result = resolve_value("CategoryNew", name)
+            assert (
+                result == expected_id
+            ), f"{name}: expected {expected_id}, got {result}"
+
+    def test_crime_count_is_20(self):
+        assert len(self.CRIME_IDS) == 20
