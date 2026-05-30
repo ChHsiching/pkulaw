@@ -94,7 +94,7 @@ def build_api_body(
         if field == "CategoryNew":
             ids = node.get("values", [])
             if ids:
-                cluster_filters["CategoryNew"] = ids[0]
+                cluster_filters["CategoryNew"] = ",".join(ids)
             continue
         if field in _TEXT_FIELDS:
             value = node.get("value", "")

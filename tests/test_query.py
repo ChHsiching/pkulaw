@@ -106,6 +106,17 @@ class TestBuildApiBody:
         assert body["clusterFilters"].get("CategoryNew") == "001"
         assert not any(n["fieldName"] == "CategoryNew" for n in body["fieldNodes"])
 
+    def test_multi_value_category_new_joins_with_commas(self):
+        config = {
+            "fieldNodes": [
+                {"field": "CategoryNew", "values": ["001002050", "001005002"]},
+            ],
+            "settings": {},
+        }
+        body = build_api_body(config)
+        assert body["clusterFilters"]["CategoryNew"] == "001002050,001005002"
+        assert not any(n["fieldName"] == "CategoryNew" for n in body["fieldNodes"])
+
     def test_group_by_override(self):
         config = {"fieldNodes": [], "settings": {}}
         body = build_api_body(config, group_by={"LastInstanceDate": "2025"})
