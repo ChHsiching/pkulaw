@@ -133,11 +133,19 @@ def parse_system_fields(text: str) -> tuple[str, str]:
 
 
 def parse_content_sections(text: str) -> dict:
-    """Extract ALL 【label】 sections dynamically."""
+    """Extract sections from 【label】 markers AND plain-text boundary labels."""
+    # Collect 【label】 positions
     positions = []
     for match in re.finditer(r"【([^】]+)】", text):
         label = match.group(1).strip()
         positions.append((match.start(), match.end(), label))
+
+    # Collect boundary label positions (plain text like "公诉机关", "当事人")
+    for label in BOUNDARY_LABELS:
+        for match in re.finditer(rf"^{re.escape(label)}\s*$", text, re.MULTILINE):
+            positions.append((match.start(), match.end(), label))
+
+    positions.sort(key=lambda x: x[0])
 
     if not positions:
         return {}
