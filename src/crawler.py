@@ -190,7 +190,10 @@ def run_search(
 
                 if page_idx == 0:
                     total = data.get("total", 0)
-                    logger.info(f"  {year} [{sort_order}]: total={total}, +{new_count}")
+                logger.info(
+                    f"  {year} [{sort_order}] p{page_idx+1}: "
+                    f"+{new_count} new ({len(seen_gids)} total)"
+                )
 
                 if new_count == 0:
                     break
@@ -339,8 +342,10 @@ def run_fetch(search_config: dict, output_dir: Path, logger) -> list[dict]:
                     if max_cases > 0 and len(fetched_gids) >= max_cases:
                         break
 
-                    if (i + 1) % 50 == 0:
-                        logger.info(f"[{i+1}/{len(remaining)}] ({title[:40]})")
+                    logger.info(
+                        f"[{i+1}/{len(remaining)}] ({title[:40]}) "
+                        f"{len(fetched_gids)} fetched"
+                    )
 
                 except Exception as e:
                     err_str = str(e)[:80]
