@@ -1,8 +1,9 @@
 """Recursive partitioning algorithm for PKULaw estimate command."""
 
 import copy
+import time
 
-from src.auth import TokenContext
+from src.auth import TokenContext, reauthenticate
 from src.config import CATEGORY_VALUES
 from src.query import build_api_body
 
@@ -71,6 +72,8 @@ def partition_query(
     page_size: int = 100,
     depth: int = 0,
     max_depth: int = 4,
+    _refresh_interval: float = 180.0,
+    _last_refresh: float | None = None,
 ) -> dict:
     """Recursively partition a query to estimate crawlable data.
 
@@ -90,6 +93,17 @@ def partition_query(
         search_fn = search_api
     if max_pages is None:
         max_pages = search_config.get("settings", {}).get("max_pages", 10)
+
+    if _last_refresh is None:
+        _last_refresh = time.time()
+
+    if (
+        _refresh_interval > 0
+        and page is not None
+        and time.time() - _last_refresh > _refresh_interval
+    ):
+        ctx.token = reauthenticate(page)
+        _last_refresh = time.time()
 
     threshold = max_pages * page_size
 
@@ -146,6 +160,8 @@ def partition_query(
                     page_size,
                     depth + 1,
                     max_depth,
+                    _refresh_interval,
+                    _last_refresh,
                 )
                 sub["label"] = val
                 children.append(sub)
