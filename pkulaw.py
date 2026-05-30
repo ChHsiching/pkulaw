@@ -15,7 +15,7 @@ def cmd_estimate(config: dict) -> None:
     import time
     from pathlib import Path
 
-    from src.auth import authenticate, close_browser, launch_browser
+    from src.auth import TokenContext, authenticate, close_browser, launch_browser
     from src.partition import partition_query
 
     output_dir = Path(config["settings"]["output_dir"])
@@ -47,7 +47,7 @@ def cmd_estimate(config: dict) -> None:
 
         print("正在估算数据量（递归分区）...\n")
         start_time = time.time()
-        result = partition_query(page, token, config)
+        result = partition_query(page, TokenContext(token=token), config)
         elapsed = time.time() - start_time
 
         _print_estimate_report(result, config, elapsed)

@@ -6,10 +6,10 @@ from datetime import datetime
 from pathlib import Path
 
 from src.auth import (
+    TokenContext,
     authenticate,
     close_browser,
     launch_browser,
-    reauthenticate,
     search_api,
 )
 from src.exporter import export_excel, export_json
@@ -166,7 +166,8 @@ def run_search(
     started_at = datetime.now()
 
     # Partition the query
-    partition_tree = partition_query(page, token, search_config)
+    ctx = TokenContext(token=token)
+    partition_tree = partition_query(page, ctx, search_config)
     leaves = _collect_leaf_searches(partition_tree, search_config)
 
     results: list[dict] = []
@@ -179,7 +180,7 @@ def run_search(
                 body = build_api_body(
                     leaf_config, page_index=page_idx, order_by=sort_order
                 )
-                data = search_api(page, token, body)
+                data = search_api(page, ctx, body)
                 items = data.get("data", [])
 
                 if not items:
