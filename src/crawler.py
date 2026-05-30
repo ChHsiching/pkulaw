@@ -154,7 +154,7 @@ def run_search(
         results = list(cached_results)
         if cached_results:
             last_year = cached_results[-1].get("search_year", 2026)
-            start_year = last_year - 1
+            start_year = last_year
         logger.info(f"Resuming from year {start_year}, {len(results)} existing gids")
 
     for year in range(start_year, 1999, -1):

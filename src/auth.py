@@ -94,7 +94,7 @@ def reauthenticate(page: Page) -> str:
 
 
 def _is_token_error(data: dict) -> bool:
-    return data.get("code") == "1" and "token" in data.get("message", "").lower()
+    return "token" in data.get("message", "").lower()
 
 
 def _is_unexpected_response(data: dict) -> bool:
