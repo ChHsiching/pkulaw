@@ -2,6 +2,7 @@
 
 import copy
 
+from src.auth import TokenContext
 from src.config import CATEGORY_VALUES
 from src.query import build_api_body
 
@@ -63,7 +64,7 @@ def _add_dimension_filter(search_config: dict, dimension: str, value: str) -> di
 
 def partition_query(
     page,
-    token: str,
+    ctx: TokenContext,
     search_config: dict,
     search_fn=None,
     max_pages: int | None = None,
@@ -93,7 +94,7 @@ def partition_query(
     threshold = max_pages * page_size
 
     body = build_api_body(search_config)
-    result = search_fn(page, token, body)
+    result = search_fn(page, ctx, body)
     total = result.get("total", 0)
 
     if total <= threshold or depth >= max_depth:
@@ -117,7 +118,7 @@ def partition_query(
         for val in values:
             child_config = _add_dimension_filter(search_config, dim, val)
             child_body = build_api_body(child_config)
-            child_result = search_fn(page, token, child_body)
+            child_result = search_fn(page, ctx, child_body)
             child_total = child_result.get("total", 0)
 
             if child_total == 0:
@@ -138,7 +139,7 @@ def partition_query(
             else:
                 sub = partition_query(
                     page,
-                    token,
+                    ctx,
                     child_config,
                     search_fn,
                     max_pages,
