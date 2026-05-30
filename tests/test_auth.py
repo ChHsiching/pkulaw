@@ -71,3 +71,73 @@ class TestSearchApiSignature:
         assert "page" in params
         assert "ctx" in params
         assert "body" in params
+
+
+class TestSearchApiTokenContext:
+    def test_updates_ctx_on_js_error(self):
+        mock_page = MagicMock()
+        call_count = 0
+
+        def fake_evaluate(js, args):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return {"_error": "not_json"}
+            return {"total": 100, "data": []}
+
+        mock_page.evaluate.side_effect = fake_evaluate
+
+        ctx = TokenContext(token="old_token")
+        with patch("src.auth.reauthenticate", return_value="new_token"):
+            result = search_api(mock_page, ctx, {"test": True})
+
+        assert ctx.token == "new_token"
+        assert result["total"] == 100
+
+    def test_updates_ctx_on_api_token_error(self):
+        mock_page = MagicMock()
+        call_count = 0
+
+        def fake_evaluate(js, args):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return {"code": "1", "message": "token error"}
+            return {"total": 200, "data": []}
+
+        mock_page.evaluate.side_effect = fake_evaluate
+
+        ctx = TokenContext(token="expired")
+        with patch("src.auth.reauthenticate", return_value="fresh"):
+            result = search_api(mock_page, ctx, {"test": True})
+
+        assert ctx.token == "fresh"
+        assert result["total"] == 200
+
+    def test_raises_on_unexpected_response(self):
+        mock_page = MagicMock()
+        mock_page.evaluate.return_value = {"code": "2", "message": "server error"}
+
+        ctx = TokenContext(token="good")
+        with pytest.raises(RuntimeError, match="Unexpected API response"):
+            search_api(mock_page, ctx, {"test": True})
+
+    def test_returns_data_on_success(self):
+        mock_page = MagicMock()
+        mock_page.evaluate.return_value = {"total": 500, "data": [{"gid": "g1"}]}
+
+        ctx = TokenContext(token="valid")
+        result = search_api(mock_page, ctx, {"test": True})
+
+        assert result["total"] == 500
+        assert ctx.token == "valid"
+
+    def test_uses_ctx_token_in_request(self):
+        mock_page = MagicMock()
+        mock_page.evaluate.return_value = {"total": 1, "data": []}
+
+        ctx = TokenContext(token="my_token")
+        search_api(mock_page, ctx, {"test": True})
+
+        call_args = mock_page.evaluate.call_args[0][1]
+        assert call_args[1] == "my_token"

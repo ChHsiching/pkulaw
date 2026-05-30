@@ -101,10 +101,11 @@ def _is_unexpected_response(data: dict) -> bool:
     return "total" not in data and "data" not in data
 
 
-def search_api(page: Page, token: str, body: dict) -> dict:
+def search_api(page: Page, ctx: TokenContext, body: dict) -> dict:
     """Send a search request to PKULaw API. Returns response dict.
 
     Retries once on auth errors (re-authenticates and retries).
+    Raises RuntimeError on unexpected API responses.
     """
     for attempt in range(2):
         try:
@@ -119,15 +120,23 @@ def search_api(page: Page, token: str, body: dict) -> dict:
                     try { return JSON.parse(text); }
                     catch(e) { return {_error: 'not_json'}; }
                 }""",
-                [body, token],
+                [body, ctx.token],
             )
             if data.get("_error"):
-                token = reauthenticate(page)
+                ctx.token = reauthenticate(page)
                 continue
+            if _is_token_error(data):
+                ctx.token = reauthenticate(page)
+                continue
+            if _is_unexpected_response(data):
+                raise RuntimeError(
+                    f"Unexpected API response: code={data.get('code', '?')}, "
+                    f"message={data.get('message', str(data)[:200])}"
+                )
             return data
         except Exception as e:
             if "Execution context" in str(e):
-                token = reauthenticate(page)
+                ctx.token = reauthenticate(page)
                 continue
             raise
     return {}
