@@ -93,6 +93,14 @@ def reauthenticate(page: Page) -> str:
     raise RuntimeError("Re-authentication failed")
 
 
+def _is_token_error(data: dict) -> bool:
+    return data.get("code") == "1" and "token" in data.get("message", "").lower()
+
+
+def _is_unexpected_response(data: dict) -> bool:
+    return "total" not in data and "data" not in data
+
+
 def search_api(page: Page, token: str, body: dict) -> dict:
     """Send a search request to PKULaw API. Returns response dict.
 
