@@ -91,6 +91,9 @@ def resolve_value(field: str, path: str) -> str:
     if path in values:
         return values[path]
 
+    if path in values.values():
+        return path
+
     raise ValueError(f"Unknown value '{path}' for field '{field}'")
 
 
