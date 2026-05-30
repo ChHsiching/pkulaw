@@ -685,3 +685,87 @@ class TestCmdCrawl:
         mock_fetch.assert_called_once()
         mock_ej.assert_called_once()
         mock_ec.assert_called_once()
+
+
+class TestInterruptSummary:
+    def test_prints_interrupt_summary(self, tmp_path, capsys):
+        from pkulaw import _print_interrupt_summary
+
+        cache = {
+            "total_unique": 2716683,
+            "results": [{"gid": f"g{i}"} for i in range(100)],
+        }
+        (tmp_path / "search_results.json").write_text(json.dumps(cache))
+        (tmp_path / "progress.json").write_text(
+            json.dumps({"fetched_gids": [f"g{i}" for i in range(1500)]})
+        )
+        cases = [
+            {"full_text": "x" * 600} if i < 1203 else {"full_text": "short"}
+            for i in range(1500)
+        ]
+        (tmp_path / "pkulaw_cases.json").write_text(json.dumps(cases))
+
+        _print_interrupt_summary(tmp_path, initial_fetched=0)
+
+        captured = capsys.readouterr()
+        assert "=== 采集中断 ===" in captured.out
+        assert "2,716,683" in captured.out
+        assert "1,500 / 2,716,683" in captured.out
+        assert "0.1%" in captured.out
+        assert "1,203" in captured.out
+        assert "本次新增：1,500" in captured.out
+        assert "重新运行相同命令即可继续采集" in captured.out
+
+    def test_shows_new_count_from_initial(self, tmp_path, capsys):
+        from pkulaw import _print_interrupt_summary
+
+        cache = {"total_unique": 100, "results": [{"gid": "g1"}]}
+        (tmp_path / "search_results.json").write_text(json.dumps(cache))
+        (tmp_path / "progress.json").write_text(
+            json.dumps({"fetched_gids": [f"g{i}" for i in range(10)]})
+        )
+        (tmp_path / "pkulaw_cases.json").write_text("[]")
+
+        _print_interrupt_summary(tmp_path, initial_fetched=7)
+
+        captured = capsys.readouterr()
+        assert "本次新增：3" in captured.out
+
+    def test_ctrl_c_in_cmd_crawl_prints_summary(self, tmp_path, capsys):
+        from unittest.mock import MagicMock, patch
+
+        from pkulaw import cmd_crawl
+
+        config = {
+            "fieldNodes": [{"field": "FullText", "value": "test"}],
+            "settings": {
+                "output_dir": str(tmp_path),
+                "format": ["json"],
+                "delay": 0,
+                "browser": "/usr/bin/chromium",
+                "headless": True,
+            },
+        }
+
+        cache = {"total_unique": 500, "results": [{"gid": "g1"}]}
+        (tmp_path / "search_results.json").write_text(json.dumps(cache))
+        (tmp_path / "progress.json").write_text(json.dumps({"fetched_gids": ["g1"]}))
+        (tmp_path / "pkulaw_cases.json").write_text(
+            json.dumps([{"full_text": "x" * 600}])
+        )
+
+        with (
+            patch(
+                "pkulaw.launch_browser",
+                return_value=(MagicMock(), MagicMock(), MagicMock(), MagicMock()),
+            ),
+            patch("pkulaw.authenticate", return_value="fake_token"),
+            patch("pkulaw.close_browser"),
+            patch("pkulaw.run_search", return_value=[{"gid": "g1", "title": "C1"}]),
+            patch("pkulaw.run_fetch", side_effect=KeyboardInterrupt),
+        ):
+            cmd_crawl(config)
+
+        captured = capsys.readouterr()
+        assert "=== 采集中断 ===" in captured.out
+        assert "重新运行相同命令即可继续采集" in captured.out

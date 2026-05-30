@@ -98,9 +98,23 @@ def cmd_crawl(config: dict) -> None:
 
     print(f"搜索完成，找到 {len(search_results)} 条结果")
 
+    # Track initial fetch count for "本次新增"
+    import json as _json
+
+    progress_file = output_dir / "progress.json"
+    initial_fetched = 0
+    if progress_file.exists():
+        initial_fetched = len(
+            _json.loads(progress_file.read_text()).get("fetched_gids", [])
+        )
+
     # Phase 2 — Fetch
     print("\n[Phase 2/3] 采集全文...")
-    fetched = run_fetch(config, output_dir, logger)
+    try:
+        fetched = run_fetch(config, output_dir, logger)
+    except KeyboardInterrupt:
+        _print_interrupt_summary(output_dir, initial_fetched)
+        return
     print(f"采集完成，共 {len(fetched)} 条")
 
     # Phase 3 — Export
@@ -293,6 +307,46 @@ def cmd_status(output_dir: Path | None = None) -> None:
             print(f"  {line}")
 
     print()
+
+
+def _print_interrupt_summary(output_dir: Path, initial_fetched: int) -> None:
+    """Print crawl progress summary after Ctrl+C interrupt."""
+    import json as _json
+
+    total_unique = 0
+    cache_file = output_dir / "search_results.json"
+    if cache_file.exists():
+        raw = _json.loads(cache_file.read_text())
+        if isinstance(raw, dict):
+            total_unique = raw.get("total_unique", len(raw.get("results", [])))
+        elif isinstance(raw, list):
+            total_unique = len(raw)
+
+    fetched_count = 0
+    progress_file = output_dir / "progress.json"
+    if progress_file.exists():
+        fetched_count = len(
+            _json.loads(progress_file.read_text()).get("fetched_gids", [])
+        )
+
+    valid_count = 0
+    results_file = output_dir / "pkulaw_cases.json"
+    if results_file.exists():
+        cases = _json.loads(results_file.read_text())
+        valid_count = sum(1 for c in cases if len(c.get("full_text", "")) > 500)
+
+    new_count = fetched_count - initial_fetched
+    pct = (fetched_count / total_unique * 100) if total_unique > 0 else 0
+
+    print("\n")
+    print("=== 采集中断 ===")
+    print(f"已搜索：{total_unique:,} 条")
+    print(f"已采集：{fetched_count:,} / {total_unique:,} ({pct:.1f}%)")
+    print(f"有效数据：{valid_count:,} 条 (>500字)")
+    print(f"本次新增：{new_count:,} 条")
+    print(f"输出：{results_file}")
+    print()
+    print("重新运行相同命令即可继续采集。")
 
 
 def _format_query(config: dict) -> str:
