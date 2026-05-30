@@ -105,6 +105,11 @@ def _is_security_block(data: dict) -> bool:
     return data.get("code") == "SecurityProtection"
 
 
+def _is_captcha(data: dict) -> bool:
+    error = data.get("error", {})
+    return isinstance(error, dict) and "captcha" in str(error.get("code", "")).lower()
+
+
 def search_api(page: Page, ctx: TokenContext, body: dict) -> dict:
     """Send a search request to PKULaw API. Returns response dict.
 
@@ -133,10 +138,16 @@ def search_api(page: Page, ctx: TokenContext, body: dict) -> dict:
             if _is_token_error(data):
                 ctx.token = reauthenticate(page)
                 continue
-            if _is_security_block(data):
+            if _is_security_block(data) or _is_captcha(data):
                 import time
 
-                time.sleep(30 * (attempt + 1))
+                wait = 30 * (attempt + 1)
+                page.goto(
+                    "https://www.pkulaw.com/advanced/case",
+                    wait_until="commit",
+                    timeout=60000,
+                )
+                time.sleep(wait)
                 continue
             if _is_unexpected_response(data):
                 raise RuntimeError(
