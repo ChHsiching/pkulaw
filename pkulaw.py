@@ -5,7 +5,7 @@ from pathlib import Path
 
 from src.auth import authenticate, close_browser, launch_browser
 from src.cli import build_search_config, create_parser
-from src.crawler import run_fetch, run_search
+from src.crawler import _excel_file, _results_file, run_crawl, run_fetch, run_search
 from src.exporter import export_csv, export_excel, export_json
 from src.log import setup_logger
 
@@ -62,7 +62,7 @@ def cmd_estimate(config: dict) -> None:
 
 
 def cmd_crawl(config: dict) -> None:
-    """Execute crawl: search → fetch → export."""
+    """Execute crawl: unified search+fetch per year with incremental xlsx."""
     from pathlib import Path
 
     output_dir = Path(config["settings"]["output_dir"])
@@ -82,23 +82,7 @@ def cmd_crawl(config: dict) -> None:
         elif "range" in node:
             print(f"  {field}: {node['range'][0]} ~ {node['range'][1]}")
 
-    # Phase 1 — Search
-    print("\n[Phase 1/3] 搜索中...")
-    pw, browser, context, page = launch_browser(
-        browser_path=config["settings"].get("browser", "/usr/bin/chromium"),
-        headless=config["settings"].get("headless", True),
-    )
-    try:
-        token = authenticate(page)
-        logger.info("Authenticated (%s...)", token[:30])
-        print(f"认证成功 ({token[:30]}...)")
-        search_results = run_search(config, page, token, output_dir, logger)
-    finally:
-        close_browser(pw, browser)
-
-    print(f"搜索完成，找到 {len(search_results)} 条结果")
-
-    # Track initial fetch count for "本次新增"
+    # Track initial fetch count for interrupt summary
     import json as _json
 
     progress_file = output_dir / "progress.json"
@@ -108,30 +92,27 @@ def cmd_crawl(config: dict) -> None:
             _json.loads(progress_file.read_text()).get("fetched_gids", [])
         )
 
-    # Phase 2 — Fetch
-    print("\n[Phase 2/3] 采集全文...")
+    print("\n搜索+采集一体化（逐年搜索后立即采集全文）...")
+    pw, browser, context, page = launch_browser(
+        browser_path=config["settings"].get("browser", "/usr/bin/chromium"),
+        headless=config["settings"].get("headless", True),
+    )
     try:
-        fetched = run_fetch(config, output_dir, logger)
-    except KeyboardInterrupt:
-        _print_interrupt_summary(output_dir, initial_fetched)
-        return
-    print(f"采集完成，共 {len(fetched)} 条")
+        token = authenticate(page)
+        logger.info("Authenticated (%s...)", token[:30])
+        print(f"认证成功 ({token[:30]}...)")
+        try:
+            fetched = run_crawl(config, page, token, output_dir, logger)
+        except KeyboardInterrupt:
+            _print_interrupt_summary(output_dir, initial_fetched)
+            return
+    finally:
+        close_browser(pw, browser)
 
-    # Phase 3 — Export
-    print("\n[Phase 3/3] 导出中...")
-    formats = config["settings"].get("format", ["json"])
-    if "json" in formats:
-        export_json(fetched, output_dir / "pkulaw_cases.json")
-        logger.info("Exported JSON")
-    if "excel" in formats or "xlsx" in formats:
-        export_excel(fetched, output_dir / "pkulaw_cases.xlsx")
-        logger.info("Exported Excel")
-    if "csv" in formats:
-        export_csv(fetched, output_dir / "pkulaw_cases.csv")
-        logger.info("Exported CSV")
-
-    print(f"\n导出完成：{', '.join(formats)}")
-    print(f"输出目录：{output_dir}\n")
+    print(f"\n采集完成，共 {len(fetched)} 条")
+    print(f"输出目录：{output_dir}")
+    print(f"  xlsx: {_excel_file(output_dir)}")
+    print(f"  json: {_results_file(output_dir)}\n")
 
 
 def _print_estimate_report(result: dict, config: dict, elapsed: float) -> None:
