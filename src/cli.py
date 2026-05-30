@@ -75,6 +75,12 @@ def create_parser() -> argparse.ArgumentParser:
         default=0,
         help="Stop after fetching N total cases (0=unlimited)",
     )
+    crawl.add_argument(
+        "--no-headless",
+        action="store_true",
+        default=False,
+        help="Show browser window (for solving CAPTCHAs interactively)",
+    )
 
     # status subcommand
     status = sub.add_parser("status", help="Show crawl status")
@@ -181,6 +187,7 @@ def build_search_config(args: argparse.Namespace) -> dict:
         settings["format"] = [f.strip() for f in args.format.split(",")]
         settings["output_dir"] = args.output_dir
         settings["max_cases"] = getattr(args, "max_cases", 0)
+        settings["headless"] = not getattr(args, "no_headless", False)
     else:
         # JSON settings already loaded above; only override if CLI explicitly differs
         settings.setdefault("delay", args.delay)
