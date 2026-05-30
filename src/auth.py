@@ -1,5 +1,7 @@
 """Browser-based authentication and PKULaw API calls."""
 
+from dataclasses import dataclass
+
 from playwright.sync_api import Page, sync_playwright
 
 API_URL = "/searchingapi/adv/list/pfnl"
@@ -7,6 +9,11 @@ API_URL = "/searchingapi/adv/list/pfnl"
 _USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
 )
+
+
+@dataclass
+class TokenContext:
+    token: str
 
 
 def launch_browser(
