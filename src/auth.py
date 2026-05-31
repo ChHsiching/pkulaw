@@ -136,7 +136,6 @@ def search_api(page: Page, ctx: TokenContext, body: dict) -> dict:
                     } finally { clearTimeout(timer); }
                 }""",
                 [body, ctx.token],
-                timeout=35000,
             )
             if data.get("_error"):
                 ctx.token = reauthenticate(page)
