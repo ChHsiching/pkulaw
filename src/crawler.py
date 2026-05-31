@@ -504,7 +504,17 @@ def run_crawl(
                 page_idx += 1
                 time.sleep(delay)
 
-        # Save search results incrementally
+            # Save search results after each sort order to preserve progress
+            completed_at = datetime.now()
+            _save_search_results(
+                output_dir,
+                all_search_gids,
+                search_config,
+                started_at=started_at,
+                completed_at=completed_at,
+            )
+
+        # Save search results after all sort orders for the year
         completed_at = datetime.now()
         _save_search_results(
             output_dir,

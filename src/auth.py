@@ -164,5 +164,7 @@ def search_api(page: Page, ctx: TokenContext, body: dict) -> dict:
             if "Execution context" in str(e):
                 ctx.token = reauthenticate(page)
                 continue
+            if "AbortError" in str(e) or "signal is aborted" in str(e):
+                return {}
             raise
     return {}
