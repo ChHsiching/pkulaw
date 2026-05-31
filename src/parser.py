@@ -23,24 +23,6 @@ METADATA_FIELDS = [
     "权责关键词",
 ]
 
-BOUNDARY_LABELS = [
-    "公诉机关",
-    "原公诉机关",
-    "当事人",
-    "上诉人",
-    "原审被告人",
-    "审理经过",
-    "一审法院查明",
-    "一审法院认为",
-    "本院查明",
-    "本院认为",
-    "二审法院查明",
-    "二审法院认为",
-    "抗诉机关",
-    "指定辩护人",
-]
-
-# Labels to skip when extracting 【】sections — system fields already handled separately
 SKIP_LABELS = {"法宝引证码", "时效性"}
 
 NOISE_WORDS = {
@@ -56,6 +38,13 @@ NOISE_WORDS = {
     "声明",
     "已进入法宝",
     "开庭公告",
+    "每周一盘",
+    "智能摘要",
+    "扫码入企",
+    "缺席审判",
+    "缺席审判震慑",
+    "智能摘要",
+    "本周的法律法规",
 }
 
 
@@ -80,16 +69,20 @@ def _strip_noise(value: str) -> str:
 def _is_noise_label(label: str) -> bool:
     if label in SKIP_LABELS:
         return True
+    if label in NOISE_WORDS:
+        return True
     if re.match(r"^\d{4}$", label):
         return True
     if re.match(r"^[A-Za-z0-9()\[\]〔〕\s]+号$", label):
+        return True
+    if len(label) > 30:
         return True
     return False
 
 
 def parse_metadata(text: str) -> dict:
     metadata = {}
-    all_labels = METADATA_FIELDS + BOUNDARY_LABELS
+    all_labels = METADATA_FIELDS
 
     label_positions = []
     for field in all_labels:
@@ -132,8 +125,8 @@ def parse_system_fields(text: str) -> tuple[str, str]:
     return fabao_gid, timeliness
 
 
-def parse_content_sections(text: str) -> dict:
-    """Extract ALL 【label】 sections dynamically."""
+def _extract_bracket_sections(text: str) -> dict:
+    """Extract 【label】 sections from normalized text."""
     positions = []
     for match in re.finditer(r"【([^】]+)】", text):
         label = match.group(1).strip()
@@ -164,6 +157,71 @@ def parse_content_sections(text: str) -> dict:
             sections[label] = content
 
     return sections
+
+
+def _extract_anchor_sections(soup) -> dict:
+    """Extract sections from <span class='anchor-case'> elements."""
+    wrap = soup.select_one(".fulltext-wrap") or soup
+    anchors = wrap.select("span.anchor-case")
+    if not anchors:
+        return {}
+
+    sections = {}
+    for anchor in anchors:
+        label = anchor.get_text(strip=True)
+        if _is_noise_label(label):
+            continue
+
+        parent = anchor.parent
+        if not parent:
+            continue
+
+        parts = []
+        found_self = False
+        for child in parent.children:
+            if child is anchor:
+                found_self = True
+                continue
+            if not found_self:
+                continue
+            if (
+                hasattr(child, "name")
+                and child.name == "span"
+                and "anchor-case" in child.get("class", [])
+            ):
+                break
+            if isinstance(child, str):
+                text = child.strip()
+                if text:
+                    parts.append(text)
+            elif hasattr(child, "get_text"):
+                text = child.get_text(strip=True)
+                if text:
+                    parts.append(text)
+
+        content = " ".join(parts)
+        content = re.sub(r"\s+", " ", content).strip()
+        if content and label not in sections:
+            sections[label] = content
+
+    return sections
+
+
+def parse_content_sections(text: str, soup=None) -> dict:
+    """Extract content sections from both 【】 and anchor-case formats."""
+    bracket_sections = _extract_bracket_sections(text)
+
+    anchor_sections = {}
+    if soup is not None:
+        anchor_sections = _extract_anchor_sections(soup)
+
+    merged = {}
+    merged.update(bracket_sections)
+    for label, content in anchor_sections.items():
+        if label not in merged:
+            merged[label] = content
+
+    return merged
 
 
 def parse_full_text(text: str) -> str:
@@ -222,7 +280,7 @@ def parse_case(html: str, gid: str) -> dict:
 
     metadata = parse_metadata(normalized)
     fabao_gid, timeliness = parse_system_fields(normalized)
-    content = parse_content_sections(normalized)
+    content = parse_content_sections(normalized, soup)
     full_text = parse_full_text(normalized)
 
     return {

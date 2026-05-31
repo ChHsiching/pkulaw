@@ -1,419 +1,600 @@
-"""Crawler for PKULaw cases — incremental search + fetch."""
+"""Crawler for PKULaw cases — unified search+fetch per year."""
 
 import json
 import time
+from datetime import datetime
 from pathlib import Path
 
-from playwright.sync_api import sync_playwright
-
+from src.auth import (
+    TokenContext,
+    authenticate,
+    close_browser,
+    launch_browser,
+    search_api,
+)
 from src.exporter import export_excel, export_json
 from src.parser import parse_case
+from src.partition import SORT_ORDERS
+from src.query import PAGE_SIZE, build_api_body
 
-OUTPUT_DIR = Path("output")
-PROGRESS_FILE = OUTPUT_DIR / "progress.json"
-SEARCH_CACHE = OUTPUT_DIR / "search_results.json"
-RESULTS_FILE = OUTPUT_DIR / "pkulaw_cases.json"
-EXCEL_FILE = OUTPUT_DIR / "pkulaw_cases.xlsx"
-INTERMEDIATE_INTERVAL = 500
-REQUEST_DELAY = 0.3
-PAGE_SIZE = 100
-MAX_PAGES = 10
-
-SORT_ORDERS = [
-    "LastInstanceDate Desc",
-    "LastInstanceDate Asc",
-    "SortNum Desc",
-    "SortNum Asc",
-]
-
-BASE_SEARCH_BODY = {
-    "orderbyExpression": "LastInstanceDate Desc",
-    "fieldNodes": [
-        {
-            "type": "text",
-            "order": 1,
-            "combineAs": 2,
-            "fieldName": "FullText",
-            "showText": "全文",
-            "subCombineAs": 2,
-            "fieldItems": [
-                {
-                    "values": "抗诉",
-                    "valuesCombineAs": 2,
-                    "extra": {"values": "", "combineAs": 2},
-                    "matchType": 1,
-                    "matchSpan": 1,
-                    "matchSpanGap": 0,
-                    "fieldScope": {"fieldName": "", "showText": ""},
-                    "order": 0,
-                    "filterNodes": [],
-                }
-            ],
-            "matchTypeEnabled": False,
-            "matchSpanEnabled": True,
-            "matchSpans": None,
-        },
-        {
-            "type": "select",
-            "order": 6,
-            "combineAs": 2,
-            "fieldName": "TrialStep",
-            "showText": "审理程序",
-            "fieldItems": [
-                {
-                    "items": [
-                        {"text": "二审", "path": "002", "name": "二审", "value": "002"},
-                        {"text": "再审", "path": "003", "name": "再审", "value": "003"},
-                    ],
-                    "combineAs": 2,
-                    "order": 0,
-                    "filterNodes": [],
-                }
-            ],
-        },
-    ],
-    "clusterFilters": {"CategoryNew": "001"},
-    "groupBy": {},
-}
+INTERMEDIATE_INTERVAL = 50
 
 
-def _load_progress() -> set[str]:
-    if PROGRESS_FILE.exists():
-        data = json.loads(PROGRESS_FILE.read_text())
+def _wait_for_content(page, min_chars=5000, attempts=30, interval_ms=500) -> None:
+    """Wait for .fulltext-wrap to have enough content."""
+    for _ in range(attempts):
+        page.wait_for_timeout(interval_ms)
+        html_len = page.evaluate(
+            "() => document.querySelector('.fulltext-wrap')?.innerHTML?.length || 0"
+        )
+        if html_len > min_chars:
+            return
+    page.wait_for_timeout(2000)
+
+
+# ---------------------------------------------------------------------------
+# Path helpers
+# ---------------------------------------------------------------------------
+
+
+def _progress_file(output_dir: Path) -> Path:
+    return output_dir / "progress.json"
+
+
+def _search_cache_file(output_dir: Path) -> Path:
+    return output_dir / "search_results.json"
+
+
+def _results_file(output_dir: Path) -> Path:
+    return output_dir / "pkulaw_cases.json"
+
+
+def _excel_file(output_dir: Path) -> Path:
+    return output_dir / "pkulaw_cases.xlsx"
+
+
+# ---------------------------------------------------------------------------
+# Progress I/O
+# ---------------------------------------------------------------------------
+
+
+def _load_progress(output_dir: Path) -> set[str]:
+    pf = _progress_file(output_dir)
+    if pf.exists():
+        data = json.loads(pf.read_text())
         return set(data.get("fetched_gids", []))
     return set()
 
 
-def _save_progress(fetched_gids: set[str]) -> None:
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    PROGRESS_FILE.write_text(
+def _save_progress(output_dir: Path, fetched_gids: set[str]) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _progress_file(output_dir).write_text(
         json.dumps({"fetched_gids": sorted(fetched_gids)}, ensure_ascii=False, indent=2)
     )
 
 
-def _save_search(results: list[dict], last_year: int) -> None:
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    SEARCH_CACHE.write_text(json.dumps(results, ensure_ascii=False, indent=2))
-    print(f"  Saved search cache: {len(results)} cases (through year {last_year})")
+# ---------------------------------------------------------------------------
+# Query matching
+# ---------------------------------------------------------------------------
 
 
-def _authenticate(page) -> str:
-    print("=== Authentication ===")
-    for attempt in range(3):
-        try:
-            page.goto(
-                "https://www.pkulaw.com/advanced/case",
-                wait_until="commit",
-                timeout=120000,
-            )
-            for _ in range(60):
-                page.wait_for_timeout(1000)
-                token = page.evaluate(
-                    "() => localStorage.getItem('access_token') || ''"
-                )
-                if (
-                    token
-                    and page.evaluate(
-                        "() => document.getElementById('app')?.innerHTML?.length || 0"
-                    )
-                    > 10000
-                ):
-                    break
-            if token:
-                print(f"Authenticated ({token[:40]}...)")
-                return token
-        except Exception as e:
-            print(f"Auth attempt {attempt + 1} failed: {e}")
-            if attempt < 2:
-                page.wait_for_timeout(5000)
-    raise RuntimeError("Authentication failed")
+def _matches_query(cached: dict, search_config: dict) -> bool:
+    """Check if cached search_results matches current query by comparing fieldNodes."""
+    query = cached.get("query")
+    if not query:
+        return False
+    cached_nodes = query.get("fieldNodes", [])
+    config_nodes = search_config.get("fieldNodes", [])
+    if not cached_nodes or not config_nodes:
+        return False
+    return cached_nodes == config_nodes
 
 
-def _reauth(page) -> str:
-    print("  Re-authenticating...")
-    page.goto(
-        "https://www.pkulaw.com/advanced/case", wait_until="commit", timeout=120000
-    )
-    for _ in range(60):
-        page.wait_for_timeout(1000)
-        token = page.evaluate("() => localStorage.getItem('access_token') || ''")
-        if (
-            token
-            and page.evaluate(
-                "() => document.getElementById('app')?.innerHTML?.length || 0"
-            )
-            > 10000
-        ):
-            print(f"  Re-authenticated ({token[:30]}...)")
-            return token
-    raise RuntimeError("Re-authentication failed")
+# ---------------------------------------------------------------------------
+# Search results save
+# ---------------------------------------------------------------------------
 
 
-def _search_one(page, token, year, sort_order, page_idx) -> tuple[dict, str]:
-    body = {
-        **BASE_SEARCH_BODY,
-        "orderbyExpression": sort_order,
-        "pageIndex": page_idx,
-        "pageSize": PAGE_SIZE,
-        "groupBy": {"LastInstanceDate": str(year)},
+def _save_search_results(
+    output_dir: Path,
+    results: list[dict],
+    search_config: dict,
+    started_at: datetime,
+    completed_at: datetime,
+) -> None:
+    """Save search_results.json with query metadata."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    data = {
+        "query": {"fieldNodes": search_config.get("fieldNodes", [])},
+        "total_unique": len(results),
+        "started_at": started_at.isoformat(),
+        "completed_at": completed_at.isoformat(),
+        "results": results,
     }
-    for attempt in range(2):
-        try:
-            data = page.evaluate(
-                """async ([body, token]) => {
-                    const resp = await fetch('/searchingapi/adv/list/pfnl', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json', 'Authorization': token},
-                        body: JSON.stringify(body)
-                    });
-                    const text = await resp.text();
-                    try { return JSON.parse(text); }
-                    catch(e) { return {_error: 'not_json'}; }
-                }""",
-                [body, token],
-            )
-            if data.get("_error"):
-                token = _reauth(page)
-                continue
-            return data, token
-        except Exception as e:
-            if "Execution context" in str(e):
-                token = _reauth(page)
-                continue
-            raise
-    return {}, token
+    _search_cache_file(output_dir).write_text(
+        json.dumps(data, ensure_ascii=False, indent=2)
+    )
 
 
-def run_search() -> None:
-    """Search and cache gids. Incremental — resumes from last saved year."""
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+# ---------------------------------------------------------------------------
+# _save_all — save results and progress
+# ---------------------------------------------------------------------------
 
-    results = []
-    seen_gids = set()
+
+def _save_all(
+    results: list[dict], fetched_gids: set[str], output_dir: Path, logger
+) -> None:
+    """Save results to JSON/Excel and update progress file."""
+    export_json(results, _results_file(output_dir))
+    try:
+        export_excel(results, _excel_file(output_dir))
+    except Exception as e:
+        logger.warning(f"Excel export failed: {e}")
+    _save_progress(output_dir, fetched_gids)
+    good = sum(1 for c in results if len(c.get("full_text", "")) > 500)
+    logger.info(
+        f"Saved ({len(results)} cases, {len(fetched_gids)} fetched, {good} loaded)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# run_search — year-by-year pagination (for estimate command)
+# ---------------------------------------------------------------------------
+
+
+def run_search(
+    search_config: dict,
+    page,
+    token: str,
+    output_dir: Path,
+    logger,
+) -> list[dict]:
+    """Search using year-by-year pagination. Returns list of {gid, title}.
+
+    Iterates years from current down to 2000, for each sort order,
+    paginating through results. Resumes from last saved year on restart.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    max_pages = search_config.get("settings", {}).get("max_pages", 10)
+    delay = search_config.get("settings", {}).get("delay", 0.3)
+    ctx = TokenContext(token=token)
+
+    # Check if cached results match current query and are complete
+    cache_file = _search_cache_file(output_dir)
+    if cache_file.exists():
+        cached = json.loads(cache_file.read_text())
+        if _matches_query(cached, search_config):
+            results = cached.get("results", [])
+            if results:
+                last_year = results[-1].get("search_year", 2026)
+                if last_year <= 2000:
+                    logger.info("Search cache complete, skipping search.")
+                    return results
+
+    started_at = datetime.now()
+    results: list[dict] = []
+    seen_gids: set[str] = set()
     start_year = 2026
 
-    if SEARCH_CACHE.exists():
-        results = json.loads(SEARCH_CACHE.read_text())
-        for r in results:
+    # Resume from partial cache
+    if cache_file.exists():
+        cached = json.loads(cache_file.read_text())
+        cached_results = (
+            cached.get("results", []) if isinstance(cached, dict) else cached
+        )
+        for r in cached_results:
             seen_gids.add(r["gid"])
-        if results:
-            start_year = results[-1].get("search_year", 2026) - 1
-        print(f"Search cache: {len(results)} cases. Resuming from year {start_year}.")
+        results = list(cached_results)
+        if cached_results:
+            last_year = cached_results[-1].get("search_year", 2026)
+            start_year = last_year
+        logger.info(f"Resuming from year {start_year}, {len(results)} existing gids")
 
-    if start_year < 2000:
-        print(f"Search complete: {len(results)} total cases.")
-        return
+    for year in range(start_year, 1999, -1):
+        for sort_order in SORT_ORDERS:
+            page_idx = 0
+            while page_idx < max_pages:
+                body = build_api_body(
+                    search_config,
+                    page_index=page_idx,
+                    order_by=sort_order,
+                    group_by={"LastInstanceDate": str(year)},
+                )
+                data = search_api(page, ctx, body)
+                items = data.get("data", [])
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            executable_path="/usr/bin/chromium",
-            headless=True,
-            args=["--no-sandbox", "--disable-setuid-sandbox"],
+                if not items:
+                    break
+
+                new_count = 0
+                for item in items:
+                    gid = item["gid"]
+                    if gid in seen_gids:
+                        continue
+                    seen_gids.add(gid)
+                    results.append(
+                        {
+                            "gid": gid,
+                            "title": item.get("title", ""),
+                            "search_year": year,
+                        }
+                    )
+                    new_count += 1
+
+                if page_idx == 0:
+                    total = data.get("total", 0)
+                logger.info(
+                    f"  {year} [{sort_order}] p{page_idx+1}: "
+                    f"+{new_count} new ({len(seen_gids)} total)"
+                )
+
+                if new_count == 0:
+                    break
+
+                page_idx += 1
+                time.sleep(delay)
+
+        # Save incrementally after each year
+        completed_at = datetime.now()
+        _save_search_results(
+            output_dir,
+            results,
+            search_config,
+            started_at=started_at,
+            completed_at=completed_at,
         )
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
-            viewport={"width": 1920, "height": 1080},
-            ignore_https_errors=True,
-        )
-        page = context.new_page()
+        logger.info(f"Year {year}: {len(seen_gids)} total unique gids")
 
-        token = _authenticate(page)
-        print(f"\n=== Searching (year {start_year} → 2000) ===")
-
-        try:
-            for year in range(start_year, 1999, -1):
-                for sort_order in SORT_ORDERS:
-                    page_idx = 0
-                    while page_idx < MAX_PAGES:
-                        data, token = _search_one(
-                            page, token, year, sort_order, page_idx
-                        )
-                        items = data.get("data", [])
-
-                        if not items:
-                            break
-
-                        new_count = 0
-                        for item in items:
-                            gid = item["gid"]
-                            if gid in seen_gids:
-                                continue
-                            seen_gids.add(gid)
-                            results.append(
-                                {
-                                    "gid": gid,
-                                    "title": item.get("title", ""),
-                                    "search_year": year,
-                                }
-                            )
-                            new_count += 1
-
-                        if page_idx == 0:
-                            total = data.get("total", 0)
-                            print(
-                                f"  {year} [{sort_order}]: total={total}, +{new_count}"
-                            )
-
-                        if new_count == 0:
-                            break
-
-                        page_idx += 1
-                        time.sleep(REQUEST_DELAY)
-
-                print(f"  Year {year}: {len(results)} total unique")
-                _save_search(results, year)
-
-        except Exception as e:
-            print(f"Search interrupted: {e}")
-            _save_search(results, year if "year" in dir() else start_year)
-
-        browser.close()
-
-    print(f"\nTotal unique cases: {len(results)}")
+    return results
 
 
-def _save_all(results: list[dict], fetched_gids: set[str]) -> None:
-    export_json(results, RESULTS_FILE)
-    try:
-        export_excel(results, EXCEL_FILE)
-    except Exception as e:
-        print(f"  Excel export failed: {e}")
-    _save_progress(fetched_gids)
-    good = sum(1 for c in results if len(c.get("full_text", "")) > 500)
-    print(
-        f"  -> Saved ({len(results)} cases, {len(fetched_gids)} fetched, {good} loaded)"
-    )
+# ---------------------------------------------------------------------------
+# run_fetch — parameterized detail page fetcher (standalone, for resuming)
+# ---------------------------------------------------------------------------
 
 
-def run_fetch() -> None:
-    """Fetch detail pages for cached search results. Auto-restarts on session failure."""
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+def run_fetch(search_config: dict, output_dir: Path, logger) -> list[dict]:
+    """Fetch detail pages for cached search results. Auto-restarts on session failure.
 
-    if not SEARCH_CACHE.exists():
-        print("No search cache. Run run_search() first.")
-        return
+    Args:
+        search_config: SearchConfig dict with 'settings' containing delay, browser_path, headless.
+        output_dir: Directory for progress, results, and cache files.
+        logger: Logger instance.
 
-    cases_meta = json.loads(SEARCH_CACHE.read_text())
+    Returns:
+        List of parsed case dicts.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    settings = search_config.get("settings", {})
+    delay = settings.get("delay", 0.3)
+    browser_path = settings.get("browser_path", "/usr/bin/chromium")
+    headless = settings.get("headless", True)
+    max_cases = settings.get("max_cases", 0)
+
+    cache_file = _search_cache_file(output_dir)
+    if not cache_file.exists():
+        logger.error("No search cache. Run run_search() first.")
+        return []
+
+    # Handle both old (list) and new (dict with "results" key) formats
+    raw = json.loads(cache_file.read_text())
+    if isinstance(raw, dict):
+        cases_meta = raw.get("results", [])
+    else:
+        cases_meta = raw
+
+    if not cases_meta:
+        logger.info("No cases to fetch.")
+        return []
 
     while True:
-        fetched_gids = _load_progress()
+        fetched_gids = _load_progress(output_dir)
         results = []
-        if RESULTS_FILE.exists():
-            results = json.loads(RESULTS_FILE.read_text())
+        results_file = _results_file(output_dir)
+        if results_file.exists():
+            results = json.loads(results_file.read_text())
 
         remaining = [c for c in cases_meta if c["gid"] not in fetched_gids]
-        print(f"\n{'='*50}")
-        print(
+        logger.info(
             f"Remaining: {len(remaining)}/{len(cases_meta)} ({len(fetched_gids)} fetched)"
         )
 
         if not remaining:
-            print("All fetched!")
-            _save_all(results, fetched_gids)
-            break
+            logger.info("All fetched!")
+            _save_all(results, fetched_gids, output_dir, logger)
+            return results
+
+        if max_cases > 0 and len(fetched_gids) >= max_cases:
+            logger.info(f"Max cases limit reached ({max_cases})")
+            _save_all(results, fetched_gids, output_dir, logger)
+            return results
 
         try:
-            with sync_playwright() as p:
-                browser = p.chromium.launch(
-                    executable_path="/usr/bin/chromium",
-                    headless=True,
-                    args=["--no-sandbox", "--disable-setuid-sandbox"],
-                )
-                context = browser.new_context(
-                    user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
-                    viewport={"width": 1920, "height": 1080},
-                    ignore_https_errors=True,
-                )
-                page = context.new_page()
+            pw, browser, context, page = launch_browser(
+                browser_path=browser_path,
+                headless=headless,
+            )
+            token = authenticate(page)
+            logger.info(f"Fetching {len(remaining)} cases")
 
-                token = _authenticate(page)
-                print(f"=== Fetching {len(remaining)} cases ===")
+            consecutive_errors = 0
+            for i, case in enumerate(remaining):
+                gid = case["gid"]
+                title = case["title"]
+                url = f"https://www.pkulaw.com/pfnl/{gid}.html"
 
-                consecutive_errors = 0
-                for i, case in enumerate(remaining):
-                    gid = case["gid"]
-                    title = case["title"]
-                    url = f"https://www.pkulaw.com/pfnl/{gid}.html"
+                try:
+                    for nav_attempt in range(3):
+                        try:
+                            page.goto(url, wait_until="commit", timeout=60000)
+                            break
+                        except Exception:
+                            if nav_attempt == 2:
+                                raise
+                            page.wait_for_timeout(5000)
 
-                    try:
-                        for nav_attempt in range(3):
-                            try:
-                                page.goto(url, wait_until="commit", timeout=60000)
-                                break
-                            except Exception:
-                                if nav_attempt == 2:
-                                    raise
-                                page.wait_for_timeout(5000)
+                    _wait_for_content(page)
 
-                        for _ in range(16):
-                            page.wait_for_timeout(500)
-                            html_len = page.evaluate(
-                                "() => document.querySelector('.fulltext-wrap')?.innerHTML?.length || 0"
-                            )
-                            if html_len > 1000:
-                                break
+                    html = page.content()
+                    parsed = parse_case(html, gid)
+                    if not parsed["title"] or parsed["title"] in ("已进入法宝V6", ""):
+                        parsed["title"] = title
 
-                        html = page.content()
-                        parsed = parse_case(html, gid)
-                        if not parsed["title"] or parsed["title"] in (
-                            "已进入法宝V6",
-                            "",
-                        ):
-                            parsed["title"] = title
-
-                        results.append(parsed)
-                        fetched_gids.add(gid)
-                        consecutive_errors = 0
-
-                        if (i + 1) % 50 == 0:
-                            print(f"[{i+1}/{len(remaining)}] ({title[:40]})")
-
-                    except Exception as e:
-                        err_str = str(e)[:80]
+                    if "法宝" in parsed.get("full_text", ""):
+                        logger.warning(
+                            f"  [{i+1}/{len(to_fetch)}] BAD DATA: '{title[:40]}' "
+                            f"contains '法宝' — page did not load correctly, skipping"
+                        )
                         consecutive_errors += 1
-                        print(f"[{i+1}/{len(remaining)}] ERR: {err_str}")
-
-                        if "Execution context" in err_str or "Target closed" in err_str:
-                            try:
-                                page = context.new_page()
-                                page.goto(
-                                    "https://www.pkulaw.com/advanced/case",
-                                    wait_until="commit",
-                                    timeout=60000,
-                                )
-                                page.wait_for_timeout(3000)
-                                page.evaluate(
-                                    "() => localStorage.getItem('access_token') || ''"
-                                )
-                            except Exception:
-                                print("  Page recovery failed, restarting browser...")
-                                break
-
                         if consecutive_errors >= 5:
-                            print("  Too many errors, restarting browser...")
+                            logger.warning("Too many bad pages, stopping fetch")
+                            break
+                        continue
+
+                    results.append(parsed)
+                    fetched_gids.add(gid)
+                    consecutive_errors = 0
+
+                    if max_cases > 0 and len(fetched_gids) >= max_cases:
+                        break
+
+                    logger.info(
+                        f"[{i+1}/{len(remaining)}] ({title[:40]}) "
+                        f"{len(fetched_gids)} fetched"
+                    )
+
+                except Exception as e:
+                    err_str = str(e)[:80]
+                    consecutive_errors += 1
+                    logger.warning(f"[{i+1}/{len(remaining)}] ERR: {err_str}")
+
+                    if "Execution context" in err_str or "Target closed" in err_str:
+                        try:
+                            page = context.new_page()
+                            page.goto(
+                                "https://www.pkulaw.com/advanced/case",
+                                wait_until="commit",
+                                timeout=60000,
+                            )
+                            page.wait_for_timeout(3000)
+                            page.evaluate(
+                                "() => localStorage.getItem('access_token') || ''"
+                            )
+                        except Exception:
+                            logger.warning(
+                                "Page recovery failed, restarting browser..."
+                            )
                             break
 
-                    if len(fetched_gids) % INTERMEDIATE_INTERVAL == 0:
-                        _save_all(results, fetched_gids)
+                    if consecutive_errors >= 5:
+                        logger.warning("Too many errors, restarting browser...")
+                        break
 
-                    time.sleep(REQUEST_DELAY)
+                if len(fetched_gids) % INTERMEDIATE_INTERVAL == 0:
+                    _save_all(results, fetched_gids, output_dir, logger)
 
-                browser.close()
+                time.sleep(delay)
+
+            close_browser(pw, browser)
 
         except Exception as e:
-            print(f"Session crashed: {e}")
+            logger.error(f"Session crashed: {e}")
 
-        _save_all(results, fetched_gids)
-        print(f"Restart in 15s...")
+        _save_all(results, fetched_gids, output_dir, logger)
+
+        if max_cases > 0 and len(fetched_gids) >= max_cases:
+            logger.info(f"Max cases limit reached ({max_cases})")
+            return results
+
+        logger.info("Restart in 15s...")
         time.sleep(15)
 
-    good = sum(1 for c in results if len(c.get("full_text", "")) > 500)
-    print(
-        f"\nTotal: {len(results)} cases, {good} loaded ({100*good//max(len(results),1)}%)"
-    )
+
+# ---------------------------------------------------------------------------
+# run_crawl — unified search+fetch per year
+# ---------------------------------------------------------------------------
 
 
-def run() -> list[dict]:
-    run_search()
-    run_fetch()
-    return json.loads(RESULTS_FILE.read_text()) if RESULTS_FILE.exists() else []
+def run_crawl(
+    search_config: dict,
+    page,
+    token: str,
+    output_dir: Path,
+    logger,
+) -> list[dict]:
+    """Search and fetch year by year. After each year's gids are collected,
+    immediately fetch those cases and save xlsx. Data appears incrementally.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    max_pages = search_config.get("settings", {}).get("max_pages", 10)
+    delay = search_config.get("settings", {}).get("delay", 0.3)
+    ctx = TokenContext(token=token)
+
+    # Load existing progress
+    cache_file = _search_cache_file(output_dir)
+    all_search_gids: list[dict] = []
+    seen_gids: set[str] = set()
+    start_year = 2026
+
+    if cache_file.exists():
+        cached = json.loads(cache_file.read_text())
+        cached_results = (
+            cached.get("results", []) if isinstance(cached, dict) else cached
+        )
+        for r in cached_results:
+            seen_gids.add(r["gid"])
+        all_search_gids = list(cached_results)
+        if cached_results:
+            last_year = cached_results[-1].get("search_year", 2026)
+            start_year = last_year
+        logger.info(f"Resuming from year {start_year}, {len(seen_gids)} existing gids")
+
+    fetched_gids = _load_progress(output_dir)
+    results: list[dict] = []
+    results_file = _results_file(output_dir)
+    if results_file.exists():
+        results = json.loads(results_file.read_text())
+
+    started_at = datetime.now()
+
+    for year in range(start_year, 1999, -1):
+        # --- Search this year ---
+        year_new_gids: list[dict] = []
+        for sort_order in SORT_ORDERS:
+            page_idx = 0
+            while page_idx < max_pages:
+                body = build_api_body(
+                    search_config,
+                    page_index=page_idx,
+                    order_by=sort_order,
+                    group_by={"LastInstanceDate": str(year)},
+                )
+                data = search_api(page, ctx, body)
+                items = data.get("data", [])
+
+                if not items:
+                    break
+
+                new_count = 0
+                for item in items:
+                    gid = item["gid"]
+                    if gid in seen_gids:
+                        continue
+                    seen_gids.add(gid)
+                    entry = {
+                        "gid": gid,
+                        "title": item.get("title", ""),
+                        "search_year": year,
+                    }
+                    all_search_gids.append(entry)
+                    year_new_gids.append(entry)
+                    new_count += 1
+
+                if page_idx == 0:
+                    total = data.get("total", 0)
+                logger.info(
+                    f"  {year} [{sort_order}] p{page_idx+1}: "
+                    f"+{new_count} new ({len(seen_gids)} total gids)"
+                )
+
+                if new_count == 0:
+                    break
+
+                page_idx += 1
+                time.sleep(delay)
+
+            # Save search results after each sort order to preserve progress
+            completed_at = datetime.now()
+            _save_search_results(
+                output_dir,
+                all_search_gids,
+                search_config,
+                started_at=started_at,
+                completed_at=completed_at,
+            )
+
+        # Save search results after all sort orders for the year
+        completed_at = datetime.now()
+        _save_search_results(
+            output_dir,
+            all_search_gids,
+            search_config,
+            started_at=started_at,
+            completed_at=completed_at,
+        )
+        logger.info(f"Year {year} search done: {len(year_new_gids)} new gids")
+
+        # --- Fetch this year's new cases immediately ---
+        to_fetch = [g for g in year_new_gids if g["gid"] not in fetched_gids]
+        if to_fetch:
+            logger.info(f"Fetching {len(to_fetch)} cases for year {year}...")
+            consecutive_errors = 0
+            for i, case in enumerate(to_fetch):
+                gid = case["gid"]
+                title = case["title"]
+                url = f"https://www.pkulaw.com/pfnl/{gid}.html"
+
+                try:
+                    for nav_attempt in range(3):
+                        try:
+                            page.goto(url, wait_until="commit", timeout=60000)
+                            break
+                        except Exception:
+                            if nav_attempt == 2:
+                                raise
+                            page.wait_for_timeout(5000)
+
+                    _wait_for_content(page)
+
+                    html = page.content()
+                    parsed = parse_case(html, gid)
+                    if not parsed["title"] or parsed["title"] in (
+                        "已进入法宝V6",
+                        "",
+                    ):
+                        parsed["title"] = title
+
+                    results.append(parsed)
+                    fetched_gids.add(gid)
+                    consecutive_errors = 0
+
+                    logger.info(
+                        f"  [{i+1}/{len(to_fetch)}] ({title[:40]}) "
+                        f"{len(fetched_gids)} total fetched"
+                    )
+
+                except Exception as e:
+                    err_str = str(e)[:80]
+                    consecutive_errors += 1
+                    logger.warning(f"  [{i+1}/{len(to_fetch)}] ERR: {err_str}")
+
+                    if "Execution context" in err_str or "Target closed" in err_str:
+                        try:
+                            page.goto(
+                                "https://www.pkulaw.com/advanced/case",
+                                wait_until="commit",
+                                timeout=60000,
+                            )
+                            page.wait_for_timeout(3000)
+                        except Exception:
+                            logger.warning("Page recovery failed")
+                            break
+
+                    if consecutive_errors >= 5:
+                        logger.warning("Too many errors, stopping fetch for this year")
+                        break
+
+                if len(fetched_gids) % INTERMEDIATE_INTERVAL == 0:
+                    _save_all(results, fetched_gids, output_dir, logger)
+
+                time.sleep(delay)
+
+        # Save xlsx + json after each year
+        _save_all(results, fetched_gids, output_dir, logger)
+        logger.info(
+            f"Year {year} done: {len(fetched_gids)} total fetched, "
+            f"{len(seen_gids)} total gids"
+        )
+
+    return results
