@@ -20,6 +20,18 @@ from src.query import PAGE_SIZE, build_api_body
 INTERMEDIATE_INTERVAL = 50
 
 
+def _wait_for_content(page, min_chars=5000, attempts=30, interval_ms=500) -> None:
+    """Wait for .fulltext-wrap to have enough content."""
+    for _ in range(attempts):
+        page.wait_for_timeout(interval_ms)
+        html_len = page.evaluate(
+            "() => document.querySelector('.fulltext-wrap')?.innerHTML?.length || 0"
+        )
+        if html_len > min_chars:
+            return
+    page.wait_for_timeout(2000)
+
+
 # ---------------------------------------------------------------------------
 # Path helpers
 # ---------------------------------------------------------------------------
@@ -322,13 +334,7 @@ def run_fetch(search_config: dict, output_dir: Path, logger) -> list[dict]:
                                 raise
                             page.wait_for_timeout(5000)
 
-                    for _ in range(16):
-                        page.wait_for_timeout(500)
-                        html_len = page.evaluate(
-                            "() => document.querySelector('.fulltext-wrap')?.innerHTML?.length || 0"
-                        )
-                        if html_len > 1000:
-                            break
+                    _wait_for_content(page)
 
                     html = page.content()
                     parsed = parse_case(html, gid)
@@ -518,13 +524,7 @@ def run_crawl(
                                 raise
                             page.wait_for_timeout(5000)
 
-                    for _ in range(16):
-                        page.wait_for_timeout(500)
-                        html_len = page.evaluate(
-                            "() => document.querySelector('.fulltext-wrap')?.innerHTML?.length || 0"
-                        )
-                        if html_len > 1000:
-                            break
+                    _wait_for_content(page)
 
                     html = page.content()
                     parsed = parse_case(html, gid)
