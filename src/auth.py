@@ -121,16 +121,22 @@ def search_api(page: Page, ctx: TokenContext, body: dict) -> dict:
         try:
             data = page.evaluate(
                 """async ([body, token]) => {
-                    const resp = await fetch('/searchingapi/adv/list/pfnl', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json', 'Authorization': token},
-                        body: JSON.stringify(body)
-                    });
-                    const text = await resp.text();
-                    try { return JSON.parse(text); }
-                    catch(e) { return {_error: 'not_json'}; }
+                    const ctrl = new AbortController();
+                    const timer = setTimeout(() => ctrl.abort(), 30000);
+                    try {
+                        const resp = await fetch('/searchingapi/adv/list/pfnl', {
+                            method: 'POST',
+                            headers: {'Content-Type': 'application/json', 'Authorization': token},
+                            body: JSON.stringify(body),
+                            signal: ctrl.signal
+                        });
+                        const text = await resp.text();
+                        try { return JSON.parse(text); }
+                        catch(e) { return {_error: 'not_json'}; }
+                    } finally { clearTimeout(timer); }
                 }""",
                 [body, ctx.token],
+                timeout=35000,
             )
             if data.get("_error"):
                 ctx.token = reauthenticate(page)

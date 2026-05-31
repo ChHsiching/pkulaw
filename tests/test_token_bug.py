@@ -33,7 +33,7 @@ class TestH1TokenErrorDetection:
         mock_page = MagicMock()
         call_count = 0
 
-        def fake_evaluate(js, args):
+        def fake_evaluate(js, args, timeout=30000):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -81,7 +81,7 @@ class TestH2TokenPropagation:
         mock_page = MagicMock()
         call_count = 0
 
-        def fake_evaluate(js, args):
+        def fake_evaluate(js, args, timeout=30000):
             nonlocal call_count
             call_count += 1
             if call_count == 1:

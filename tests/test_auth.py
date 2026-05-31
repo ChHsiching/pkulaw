@@ -78,7 +78,7 @@ class TestSearchApiTokenContext:
         mock_page = MagicMock()
         call_count = 0
 
-        def fake_evaluate(js, args):
+        def fake_evaluate(js, args, timeout=30000):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -98,7 +98,7 @@ class TestSearchApiTokenContext:
         mock_page = MagicMock()
         call_count = 0
 
-        def fake_evaluate(js, args):
+        def fake_evaluate(js, args, timeout=30000):
             nonlocal call_count
             call_count += 1
             if call_count == 1:
