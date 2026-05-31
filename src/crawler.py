@@ -341,6 +341,17 @@ def run_fetch(search_config: dict, output_dir: Path, logger) -> list[dict]:
                     if not parsed["title"] or parsed["title"] in ("已进入法宝V6", ""):
                         parsed["title"] = title
 
+                    if "法宝" in parsed.get("full_text", ""):
+                        logger.warning(
+                            f"  [{i+1}/{len(to_fetch)}] BAD DATA: '{title[:40]}' "
+                            f"contains '法宝' — page did not load correctly, skipping"
+                        )
+                        consecutive_errors += 1
+                        if consecutive_errors >= 5:
+                            logger.warning("Too many bad pages, stopping fetch")
+                            break
+                        continue
+
                     results.append(parsed)
                     fetched_gids.add(gid)
                     consecutive_errors = 0
